@@ -1,9 +1,8 @@
-version: "1"
 services:
   - type: worker
     name: fambot
     env: python
-    region: frankfurt
+    region: Moscow  # Можно выбрать ближайший
     plan: free
     buildCommand: |
       pip install --upgrade pip
@@ -17,11 +16,4 @@ services:
         value: "true"
       - key: TZ
         value: "Europe/Moscow"
-      # Если используете SQLite, добавьте переменную для хранения данных
-      - key: DATABASE_URL
-        value: "sqlite:///data/bot.db"
     numInstances: 1
-    disk:
-      name: data
-      mountPath: /data
-      sizeGB: 1
