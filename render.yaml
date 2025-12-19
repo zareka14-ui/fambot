@@ -1,33 +1,27 @@
-version: 3
+version: "1"
 services:
-  - type: worker  # Критически важно - Background Worker для бота
-    name: fambot-worker
+  - type: worker
+    name: fambot
     env: python
-    runtime: python
-    pythonVersion: "3.11"
+    region: frankfurt
+    plan: free
     buildCommand: |
       pip install --upgrade pip
       pip install -r requirements.txt
     startCommand: python main.py
-    plan: free
     autoDeploy: true
     envVars:
       - key: BOT_TOKEN
-        sync: false  # Секретный токен, будет вводиться вручную
+        sync: false
       - key: PYTHONUNBUFFERED
         value: "true"
       - key: TZ
-        value: "Europe/Izhevsk"
-      - key: PYTHONPATH
-        value: "/opt/render/project/src"
-    numInstances: 1  # ОБЯЗАТЕЛЬНО 1 для избежания конфликтов
+        value: "Europe/Moscow"
+      # Если используете SQLite, добавьте переменную для хранения данных
+      - key: DATABASE_URL
+        value: "sqlite:///data/bot.db"
+    numInstances: 1
     disk:
-      name: bot-storage
+      name: data
       mountPath: /data
       sizeGB: 1
-    healthCheck:
-      type: command
-      command: python -c "import sys; sys.exit(0)"
-      intervalSeconds: 60
-      timeoutSeconds: 10
-      maxFailures: 3
