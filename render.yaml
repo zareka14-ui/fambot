@@ -1,0 +1,11 @@
+# В терминале в корне вашего проекта
+echo 'services:
+  - type: worker
+    name: fambot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+    numInstances: 1' > render.yaml
