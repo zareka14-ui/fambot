@@ -17,8 +17,7 @@ from app.handlers.base import base_router, init_db
 
 # --- ФУНКЦИЯ РАССЫЛКИ ---
 async def send_daily_motivation(bot: Bot):
-    # Замените на ваш реальный ID после получения через /id
-    chat_id = -1002302300067  # ПРИМЕР ID (замените на свой!)
+    chat_id = 117535475  # Вставьте ваш ID сюда (без кавычек)
     
     quotes = [
         "Семья — это не главное. Семья — это всё. ❤️",
@@ -95,3 +94,4 @@ if __name__ == '__main__':
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logging.info("Bot stopped!")
+
