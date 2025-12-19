@@ -12,7 +12,37 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 # --- Функция подключения к БД ---
 async def get_db_connection():
     return await asyncpg.connect(DATABASE_URL)
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 
+@base_router.message(Command("start"))
+async def cmd_start(message: Message):
+    user_name = message.from_user.first_name
+    
+    # Кнопки под сообщением
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            # Кнопка для открытия Mini App (замените URL на свой, если будет)
+            InlineKeyboardButton(text="🎮 Открыть игры", web_app=WebAppInfo(url="https://prizes.gamee.com/"))
+        ],
+        [
+            InlineKeyboardButton(text="📜 Справка", callback_data="help_callback"),
+            InlineKeyboardButton(text="📈 Рейтинг", callback_data="rating_callback")
+        ]
+    ])
+    
+    welcome_text = (
+        f"<b>Привет, {user_name}! 👋</b>\n\n"
+        f"Я — ваш <b>Семейный Помощник</b>. Я помогаю вести списки покупок, "
+        f"коплю добрые дела и храню ваши лучшие шутки.\n\n"
+        f"🚀 <b>Что я умею:</b>\n"
+        f"• Веду общий список покупок (/list)\n"
+        f"• Считаю рейтинг полезности (/rating)\n"
+        f"• Храню цитаты семьи (/phrase)\n"
+        f"• Играю и развлекаю (/knb)\n\n"
+        f"Нажми кнопку ниже, чтобы заглянуть в игровой центр!"
+    )
+    
+    await message.answer(welcome_text, reply_markup=keyboard)
 # --- Инициализация таблиц ---
 async def init_db():
     conn = await get_db_connection()
@@ -196,3 +226,4 @@ async def fun_help(message: Message):
     await message.answer(
         "<b>Команды:</b>\n/buy, /list, /clear\n/quote, /phrase\n/remind, /rating\n/knb, /dice, /who"
     )
+
