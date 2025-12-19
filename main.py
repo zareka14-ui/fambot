@@ -1,4 +1,5 @@
 import os
+import random
 import asyncio
 import logging
 import sys
@@ -8,30 +9,31 @@ from threading import Thread
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # Импорты из ваших модулей
 from config.settings import config
-from app.handlers.base import base_router, init_db # Добавили init_db сюда
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from app.handlers.base import base_router, init_db
 
+# --- ФУНКЦИЯ РАССЫЛКИ ---
 async def send_daily_motivation(bot: Bot):
-    # Список ID чатов, куда слать уведомления (можно хранить в БД)
-    # Для начала можно просто отправить в ваш семейный чат по ID
-    chat_id = -100XXXXXXXXXX  # Замените на ID вашего семейного чата
+    # Замените на ваш реальный ID после получения через /id
+    chat_id = -1002302300067  # ПРИМЕР ID (замените на свой!)
     
     quotes = [
         "Семья — это не главное. Семья — это всё. ❤️",
         "Хороший день начинается с улыбки и чашки чая! 👋",
-        "Не забудьте сегодня сказать друг другу 'спасибо'! ✨"
+        "Не забудьте сегодня сказать друг другу 'спасибо'! ✨",
+        "Семья — это там, где тебя всегда ждут. Дом — это там, где тебя любят."
     ]
     
-    await bot.send_message(chat_id, f"<b>Доброе утро! ☀️</b>\n\n{random.choice(quotes)}")
+    try:
+        await bot.send_message(chat_id, f"<b>Доброе утро! ☀️</b>\n\n{random.choice(quotes)}")
+        logging.info(f"Daily motivation sent to {chat_id}")
+    except Exception as e:
+        logging.error(f"Failed to send daily message: {e}")
 
-# В функции main() перед polling:
-scheduler = AsyncIOScheduler()
-scheduler.add_job(send_daily_motivation, "cron", hour=9, minute=0, args=[bot])
-scheduler.start()
-# --- ВЕБ-СЕРВЕР ДЛЯ ПОДДЕРЖКИ ЖИЗНИ (KEEP ALIVE) ---
+# --- ВЕБ-СЕРВЕР (KEEP ALIVE) ---
 app = Flask('')
 
 @app.route('/')
@@ -39,48 +41,47 @@ def home():
     return "OK"
 
 def run():
-    # Render автоматически назначает порт через переменную PORT
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
     t = Thread(target=run)
-    t.daemon = True # Поток умрет вместе с основной программой
+    t.daemon = True
     t.start()
 
 # --- ОСНОВНАЯ ЛОГИКА БОТА ---
 async def main():
-    # 1. Настройка логирования
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s",
         stream=sys.stdout
     )
 
-    # 2. ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ
-    # Это создаст таблицы в PostgreSQL до того, как бот начнет работу
+    # 1. ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ
     try:
         await init_db()
         logging.info("Database initialized successfully.")
     except Exception as e:
         logging.error(f"Failed to initialize database: {e}")
-        return # Останавливаем запуск, если база не подключилась
+        return
 
-    # 3. Инициализация Бота
+    # 2. Инициализация Бота
     bot = Bot(
         token=config.bot_token, 
         default=DefaultBotProperties(parse_mode=ParseMode.HTML)
     )
     
-    # 4. Диспетчер
     dp = Dispatcher()
-    
-    # 5. Регистрируем роутеры
     dp.include_router(base_router)
-    
+
+    # 3. НАСТРОЙКА ПЛАНИРОВЩИКА (внутри main, чтобы видеть bot)
+    scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
+    # Запуск каждый день в 9:00 утра
+    scheduler.add_job(send_daily_motivation, "cron", hour=9, minute=0, args=[bot])
+    scheduler.start()
+    logging.info("Scheduler started.")
+
     logging.info("Starting bot on Render...")
-    
-    # Очистка вебхуков
     await bot.delete_webhook(drop_pending_updates=True)
     
     try:
@@ -89,12 +90,8 @@ async def main():
         await bot.session.close()
 
 if __name__ == '__main__':
-    # 1. Запускаем Flask в фоне для Render
     keep_alive()
-    
-    # 2. Запускаем бота
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logging.info("Bot stopped!")
-
