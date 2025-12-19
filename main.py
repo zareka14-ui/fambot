@@ -11,51 +11,58 @@ from aiogram.client.default import DefaultBotProperties
 
 # Импорты из ваших модулей
 from config.settings import config
-from app.handlers.base import base_router
-# from app.database import db_connect # Раскомментируйте, если используете
+from app.handlers.base import base_router, init_db # Добавили init_db сюда
 
 # --- ВЕБ-СЕРВЕР ДЛЯ ПОДДЕРЖКИ ЖИЗНИ (KEEP ALIVE) ---
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "OK" # Минимум текста, чтобы Cron-job не ругался
+    return "OK"
 
 def run():
-    # Render автоматически назначает порт. Если его нет, используем 8080
+    # Render автоматически назначает порт через переменную PORT
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
     t = Thread(target=run)
+    t.daemon = True # Поток умрет вместе с основной программой
     t.start()
 
 # --- ОСНОВНАЯ ЛОГИКА БОТА ---
 async def main():
-    # 1. Настройка логирования (INFO достаточно, чтобы не забивать логи)
+    # 1. Настройка логирования
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s",
         stream=sys.stdout
     )
-    
-    # 2. Инициализация Бота
-    # УБРАЛИ ПРОКСИ: На Render они не нужны и будут выдавать ошибку подключения
+
+    # 2. ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ
+    # Это создаст таблицы в PostgreSQL до того, как бот начнет работу
+    try:
+        await init_db()
+        logging.info("Database initialized successfully.")
+    except Exception as e:
+        logging.error(f"Failed to initialize database: {e}")
+        return # Останавливаем запуск, если база не подключилась
+
+    # 3. Инициализация Бота
     bot = Bot(
         token=config.bot_token, 
         default=DefaultBotProperties(parse_mode=ParseMode.HTML)
     )
     
-    # 3. Диспетчер
+    # 4. Диспетчер
     dp = Dispatcher()
     
-    # 4. Регистрируем роутеры
+    # 5. Регистрируем роутеры
     dp.include_router(base_router)
     
-    # 5. Запуск
     logging.info("Starting bot on Render...")
     
-    # Удаляем вебхуки, чтобы бот мог работать через long polling
+    # Очистка вебхуков
     await bot.delete_webhook(drop_pending_updates=True)
     
     try:
@@ -64,10 +71,10 @@ async def main():
         await bot.session.close()
 
 if __name__ == '__main__':
-    # Запускаем Flask в фоне
+    # 1. Запускаем Flask в фоне для Render
     keep_alive()
     
-    # Запускаем бота
+    # 2. Запускаем бота
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
