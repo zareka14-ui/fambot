@@ -1,4 +1,20 @@
 # main.py
+from flask import Flask
+from threading import Thread
+
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "I am alive"
+
+def run():
+  app.run(host='0.0.0.0', port=8080)
+
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
+    
 import asyncio
 import logging
 import sys
@@ -55,9 +71,15 @@ async def main():
     logging.info("Starting bot...")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
-
+if __name__ == '__main__':
+    keep_alive()  # Запускает веб-сервер в отдельном потоке
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print('Exit')
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
+
         logging.info("Bot stopped!")
