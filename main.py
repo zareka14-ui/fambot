@@ -1,5 +1,4 @@
 import os
-import random
 import asyncio
 import logging
 import sys
@@ -14,23 +13,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # Импорты из ваших модулей
 from config.settings import config
 from app.handlers.base import base_router, init_db
-
-# --- ФУНКЦИЯ РАССЫЛКИ ---
-async def send_daily_motivation(bot: Bot):
-    chat_id = 117535475  # Вставьте ваш ID сюда (без кавычек)
-    
-    quotes = [
-        "Семья — это не главное. Семья — это всё. ❤️",
-        "Хороший день начинается с улыбки и чашки чая! 👋",
-        "Не забудьте сегодня сказать друг другу 'спасибо'! ✨",
-        "Семья — это там, где тебя всегда ждут. Дом — это там, где тебя любят."
-    ]
-    
-    try:
-        await bot.send_message(chat_id, f"<b>Доброе утро! ☀️</b>\n\n{random.choice(quotes)}")
-        logging.info(f"Daily motivation sent to {chat_id}")
-    except Exception as e:
-        logging.error(f"Failed to send daily message: {e}")
+from app.handlers.base import send_daily_motivation, send_birthday_reminders  # Новые функции из base.py
 
 # --- ВЕБ-СЕРВЕР (KEEP ALIVE) ---
 app = Flask('')
@@ -66,19 +49,40 @@ async def main():
 
     # 2. Инициализация Бота
     bot = Bot(
-        token=config.bot_token, 
+        token=config.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML)
     )
     
     dp = Dispatcher()
     dp.include_router(base_router)
 
-    # 3. НАСТРОЙКА ПЛАНИРОВЩИКА (внутри main, чтобы видеть bot)
+    # 3. НАСТРОЙКА ПЛАНИРОВЩИКА
     scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
-    # Запуск каждый день в 9:00 утра
-    scheduler.add_job(send_daily_motivation, "cron", hour=6, minute=0, args=[bot])
+    
+    # Ежедневная мотивация с красивым фото и свежей цитатой — в 7:30 утра
+    scheduler.add_job(
+        send_daily_motivation,
+        trigger="cron",
+        hour=7,
+        minute=30,
+        args=[bot],
+        id="daily_motivation",
+        replace_existing=True
+    )
+    
+    # Напоминание о днях рождения — в 8:30 утра
+    scheduler.add_job(
+        send_birthday_reminders,
+        trigger="cron",
+        hour=8,
+        minute=30,
+        args=[bot],
+        id="birthday_reminders",
+        replace_existing=True
+    )
+    
     scheduler.start()
-    logging.info("Scheduler started.")
+    logging.info("Scheduler запущен: мотивация в 7:30, напоминания о ДР в 8:30")
 
     logging.info("Starting bot on Render...")
     await bot.delete_webhook(drop_pending_updates=True)
@@ -94,5 +98,3 @@ if __name__ == '__main__':
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logging.info("Bot stopped!")
-
-
