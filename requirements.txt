@@ -1,4 +1,5 @@
 aiogram
 flask
-gunicorn
 python-dotenv
+asyncpg
+sqlalchemy
