@@ -4,7 +4,7 @@ import asyncio
 import asyncpg
 import aiohttp
 from datetime import datetime
-from aiogram import Router, types
+from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo, CallbackQuery
 
@@ -93,9 +93,9 @@ async def add_reputation(message: Message):
 
     conn = await get_db_connection()
     await conn.execute('''
-        INSERT INTO reputation (user_id, name, score) 
+        INSERT INTO reputation (user_id, name, score)
         VALUES ($1, $2, 1)
-        ON CONFLICT (user_id) DO UPDATE 
+        ON CONFLICT (user_id) DO UPDATE
         SET score = reputation.score + 1, name = $2
     ''', target_user.id, target_user.first_name)
     
@@ -189,7 +189,6 @@ async def get_quote(message: Message):
     row = await conn.fetchrow('SELECT text, author FROM quotes ORDER BY RANDOM() LIMIT 1')
     await conn.close()
 
-    if
     if not row:
         await message.answer("Архив цитат пуст.")
     else:
@@ -259,7 +258,7 @@ async def cmd_knb_start(message: Message):
             InlineKeyboardButton(text="✂️ Ножницы", callback_data="knb_ножницы"),
             InlineKeyboardButton(text="📄 Бумага", callback_data="knb_бумага")
         ],
-        [InlineKeyboardButton(text="📊 Моя стати remarkстика", callback_data="knb_my_stats")]
+        [InlineKeyboardButton(text="📊 Моя статистика", callback_data="knb_my_stats")]
     ])
     
     await message.answer(
@@ -350,8 +349,8 @@ async def knb_my_stats(callback: CallbackQuery):
 async def knb_top(message: Message):
     conn = await get_db_connection()
     rows = await conn.fetch('''
-        SELECT user_id, wins, losses, draws 
-        FROM knb_stats 
+        SELECT user_id, wins, losses, draws
+        FROM knb_stats
         WHERE wins + losses + draws > 0
         ORDER BY wins DESC LIMIT 10
     ''')
