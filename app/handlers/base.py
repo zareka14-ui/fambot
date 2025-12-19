@@ -212,7 +212,7 @@ async def add_birthday(message: Message):
         await message.answer("Неверный формат!\nПравильно: /др Имя ДД.ММ\nПример: /др Мама 15.03")
 
 # --- 5. ПОГОДА (wttr.in — без ключа) ---
-async def get_weather(city: str = "Москва") -> str:
+async def get_weather(city: str = "Ижевск") -> str:
     city_encoded = city.strip().replace(" ", "+")
     url = f"https://wttr.in/{city_encoded}?format=%l+%c+%t+%w+%h%%25+%P&lang=ru"
     
@@ -242,7 +242,7 @@ async def get_weather(city: str = "Москва") -> str:
 @base_router.message(Command("погода", "weather"))
 async def cmd_weather(message: Message):
     args = message.text.split(maxsplit=1)
-    city = args[1].strip() if len(args) > 1 else "Москва"
+    city = args[1].strip() if len(args) > 1 else "Ижевск"
     weather_text = await get_weather(city)
     await message.answer(weather_text)
 
@@ -459,7 +459,7 @@ async def send_daily_motivation(bot):
             quote_text = "Доброе утро, родные! Пусть день будет полон тепла и улыбок ❤️"
     
     # Погода
-    weather_text = await get_weather("Москва")  # Измените город при необходимости
+    weather_text = await get_weather("Ижевск")  # Измените город при необходимости
     
     full_text = (
         f"<b>☀️ Доброе утро, любимая семья! ☀️</b>\n\n"
@@ -501,3 +501,4 @@ async def send_birthday_reminders(bot):
     if reminders:
         text = "<b>🎉 Ближайшие дни рождения:</b>\n\n" + "\n".join(reminders)
         await bot.send_message(chat_id, text)
+
