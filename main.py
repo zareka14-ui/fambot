@@ -4,45 +4,91 @@ import logging
 import sys
 import atexit
 import signal
+from contextlib import asynccontextmanager
+
 from flask import Flask
 from threading import Thread, Lock
-from functools import wraps
 
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
-from aiogram.exceptions import TelegramConflictError, TelegramRetryAfter
+from aiogram.exceptions import TelegramConflictError, TelegramRetryAfter, TelegramNetworkError
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.strategy import FSMStrategy
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+from sqlalchemy import create_engine
 
 # Импорты из ваших модулей
 from config.settings import config
 from app.handlers.base import base_router, init_db
 from app.handlers.base import send_daily_motivation, send_birthday_reminders
 
-# --- SINGLE INSTANCE CHECKER ---
+# --- SINGLE INSTANCE CHECKER (Улучшенный) ---
 class SingleInstanceChecker:
-    """Проверка, что запущен только один экземпляр бота"""
+    """Проверка единственного экземпляра с файловой блокировкой"""
     
-    _instance = None
-    _lock = Lock()
-    
-    def __new__(cls):
-        with cls._lock:
-            if cls._instance is None:
-                cls._instance = super().__new__(cls)
-                cls._instance.lock_acquired = False
-                cls._instance.lock_file = "/tmp/fambot.lock"
-                cls._instance.initialized = False
-            return cls._instance
-    
-    def __init__(self):
-        if not self.initialized:
-            self.initialized = True
-    
+    def __init__(self, lock_name="fambot.lock"):
+        self.lock_file = f"/tmp/{lock_name}"
+        self.lock_acquired = False
+        self.file_handle = None
+        
     def acquire_lock(self) -> bool:
-        """Пытается получить блокировку, возвращает True если успешно"""
+        """Получение блокировки с использованием fcntl"""
         try:
-            # Проверяем существующий lock-файл
+            import fcntl
+            
+            self.file_handle = open(self.lock_file, 'w')
+            
+            # Пытаемся получить эксклюзивную блокировку
+            try:
+                fcntl.flock(self.file_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.lock_acquired = True
+                
+                # Записываем PID текущего процесса
+                self.file_handle.write(str(os.getpid()))
+                self.file_handle.flush()
+                
+                # Регистрируем очистку
+                def cleanup():
+                    if self.lock_acquired:
+                        fcntl.flock(self.file_handle, fcntl.LOCK_UN)
+                        self.file_handle.close()
+                        if os.path.exists(self.lock_file):
+                            os.remove(self.lock_file)
+                        logging.info("🔒 Блокировка освобождена")
+                
+                atexit.register(cleanup)
+                
+                # Обработка сигналов
+                def signal_handler(signum, frame):
+                    logging.info(f"📶 Получен сигнал {signum}")
+                    cleanup()
+                    sys.exit(0)
+                
+                signal.signal(signal.SIGTERM, signal_handler)
+                signal.signal(signal.SIGINT, signal_handler)
+                
+                logging.info("✅ Эксклюзивная блокировка получена")
+                return True
+                
+            except (IOError, BlockingIOError):
+                # Файл уже заблокирован другим процессом
+                self.file_handle.close()
+                logging.error("❌ Бот уже запущен в другом процессе")
+                return False
+                
+        except ImportError:
+            # fallback для Windows или систем без fcntl
+            return self._acquire_lock_fallback()
+        except Exception as e:
+            logging.error(f"Ошибка при получении блокировки: {e}")
+            return False
+    
+    def _acquire_lock_fallback(self) -> bool:
+        """Резервный метод блокировки для совместимости"""
+        try:
             if os.path.exists(self.lock_file):
                 with open(self.lock_file, 'r') as f:
                     old_pid = f.read().strip()
@@ -53,243 +99,311 @@ class SingleInstanceChecker:
                     logging.error(f"⚠️ Бот уже запущен с PID {old_pid}")
                     return False
                 except (OSError, ValueError):
-                    # Процесс не существует - удаляем старый файл
                     os.remove(self.lock_file)
             
-            # Создаем новый lock-файл
             with open(self.lock_file, 'w') as f:
                 f.write(str(os.getpid()))
             
             self.lock_acquired = True
             
-            # Автоматическое удаление при завершении
             def cleanup():
                 if self.lock_acquired and os.path.exists(self.lock_file):
                     os.remove(self.lock_file)
-                    logging.info("Lock файл удален")
+                    logging.info("🔒 Блокировка освобождена (fallback)")
             
             atexit.register(cleanup)
             
-            # Обработка сигналов для корректного завершения
-            def signal_handler(signum, frame):
-                logging.info(f"Получен сигнал {signum}, завершаем работу...")
-                if self.lock_acquired and os.path.exists(self.lock_file):
-                    os.remove(self.lock_file)
-                sys.exit(0)
-            
-            signal.signal(signal.SIGTERM, signal_handler)
-            signal.signal(signal.SIGINT, signal_handler)
-            
-            logging.info("✅ Блокировка получена, запускаем бота...")
+            logging.info("✅ Блокировка получена (fallback)")
             return True
             
         except Exception as e:
-            logging.error(f"Ошибка при получении блокировки: {e}")
+            logging.error(f"Ошибка fallback блокировки: {e}")
             return False
     
     def release_lock(self):
-        """Освобождает блокировку"""
-        if self.lock_acquired and os.path.exists(self.lock_file):
-            os.remove(self.lock_file)
+        """Освобождение блокировки"""
+        if self.lock_acquired and self.file_handle:
+            try:
+                import fcntl
+                fcntl.flock(self.file_handle, fcntl.LOCK_UN)
+            except:
+                pass
+            self.file_handle.close()
+            if os.path.exists(self.lock_file):
+                os.remove(self.lock_file)
             self.lock_acquired = False
 
-# --- CONFLICT HANDLING DECORATOR ---
-def handle_telegram_conflict(max_retries: int = 3):
-    """Декоратор для обработки конфликтов Telegram в асинхронных функциях"""
-    def decorator(func):
-        @wraps(func)
-        async def wrapper(*args, **kwargs):
-            retry_count = 0
-            base_delay = 1
-            
-            while retry_count < max_retries:
-                try:
-                    return await func(*args, **kwargs)
-                except TelegramConflictError as e:
-                    retry_count += 1
-                    logging.warning(
-                        f"Конфликт с другим экземпляром бота "
-                        f"(попытка {retry_count}/{max_retries}): {e}"
-                    )
-                    
-                    if retry_count >= max_retries:
-                        logging.error(
-                            "🚨 Достигнут лимит попыток. "
-                            "Возможно, запущен другой экземпляр бота."
-                        )
-                        logging.error("Завершаем работу...")
-                        sys.exit(1)
-                    
-                    # Экспоненциальная задержка с джиттером
-                    delay = base_delay * (2 ** retry_count) + (retry_count * 0.1)
-                    logging.info(f"Ждем {delay:.2f} секунд перед повторной попыткой...")
-                    await asyncio.sleep(delay)
-                    
-                except TelegramRetryAfter as e:
-                    logging.warning(f"Telegram просит подождать: {e} секунд")
-                    await asyncio.sleep(e.retry_after)
-                    continue
-                    
-                except Exception as e:
-                    logging.error(f"Ошибка в функции {func.__name__}: {e}")
+# --- КОНФЛИКТЫ TELEGRAM ---
+class TelegramConflictHandler:
+    """Обработчик конфликтов Telegram с экспоненциальной backoff стратегией"""
+    
+    def __init__(self, max_retries=5):
+        self.max_retries = max_retries
+        self.conflict_count = 0
+    
+    async def execute_with_retry(self, coro_func, *args, **kwargs):
+        """Выполнение с повторными попытками при конфликтах"""
+        retry = 0
+        
+        while retry < self.max_retries:
+            try:
+                return await coro_func(*args, **kwargs)
+                
+            except TelegramConflictError as e:
+                retry += 1
+                self.conflict_count += 1
+                
+                logging.warning(
+                    f"⚡ Конфликт Telegram (попытка {retry}/{self.max_retries}): {e}"
+                )
+                
+                if retry >= self.max_retries:
+                    logging.error("🚨 Превышен лимит попыток. Возможно, запущен другой бот")
+                    if self.conflict_count > 3:
+                        logging.critical("⚠️ Множественные конфликты - проверьте дублирующиеся процессы")
                     raise
-            
-            return await func(*args, **kwargs)
-        return wrapper
-    return decorator
+                
+                # Экспоненциальная задержка с jitter
+                delay = min(2 ** retry + (retry * 0.5), 30)  # Макс 30 секунд
+                logging.info(f"⏳ Ждем {delay:.1f} секунд...")
+                await asyncio.sleep(delay)
+                
+            except TelegramRetryAfter as e:
+                logging.warning(f"⏰ Telegram просит подождать {e.retry_after} сек")
+                await asyncio.sleep(e.retry_after)
+                
+            except TelegramNetworkError as e:
+                logging.warning(f"🌐 Сетевая ошибка: {e}, пробуем снова...")
+                await asyncio.sleep(5)
+        
+        raise TelegramConflictError("Не удалось выполнить запрос после всех попыток")
 
-# --- ВЕБ-СЕРВЕР (KEEP ALIVE) ---
-app = Flask('')
+# --- FLASK KEEP-ALIVE ---
+app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "OK"
+    return "🚀 Fambot is running"
 
 @app.route('/health')
-def health_check():
-    """Эндпоинт для health checks на Render"""
-    return {"status": "ok", "service": "fambot"}, 200
+def health():
+    """Health check для Render и мониторинга"""
+    return {
+        "status": "healthy",
+        "service": "telegram-bot",
+        "timestamp": asyncio.get_event_loop().time() if hasattr(asyncio, 'get_event_loop') else 0
+    }, 200
+
+@app.route('/status')
+def status():
+    """Статус бота для отладки"""
+    try:
+        import psutil
+        import socket
+        info = {
+            "hostname": socket.gethostname(),
+            "pid": os.getpid(),
+            "memory": psutil.Process().memory_info().rss / 1024 / 1024,  # MB
+            "uptime": psutil.Process().create_time(),
+            "conflict_count": getattr(main_bot, 'conflict_handler', None).conflict_count if 'main_bot' in globals() else 0
+        }
+        return info, 200
+    except:
+        return {"status": "running", "pid": os.getpid()}, 200
 
 def run_flask():
-    """Запуск Flask в отдельном потоке"""
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
+    """Запуск Flask сервера в отдельном потоке"""
+    port = int(os.environ.get('PORT', 8080))
+    # Отключаем debug для продакшена
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
-def keep_alive():
-    """Запуск веб-сервера для keep-alive"""
-    t = Thread(target=run_flask, daemon=True)
-    t.start()
-    logging.info(f"Flask keep-alive сервер запущен на порту 8080")
-
-# --- ОСНОВНАЯ ЛОГИКА БОТА ---
-@handle_telegram_conflict(max_retries=3)
-async def safe_start_polling(dp: Dispatcher, bot: Bot):
-    """Безопасный запуск polling с обработкой конфликтов"""
-    await dp.start_polling(bot)
-
-async def main():
-    # 1. НАСТРОЙКА ЛОГИРОВАНИЯ
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        stream=sys.stdout
-    )
-    logger = logging.getLogger(__name__)
+# --- ОСНОВНОЙ БОТ ---
+async def create_bot():
+    """Создание и конфигурация бота"""
+    # Инициализация базы данных
+    await init_db()
+    logging.info("✅ База данных инициализирована")
     
-    # 2. ПРОВЕРКА ЕДИНСТВЕННОГО ЭКЗЕМПЛЯРА
-    instance_checker = SingleInstanceChecker()
-    if not instance_checker.acquire_lock():
-        logger.error("Не удалось получить блокировку. Бот уже запущен!")
-        sys.exit(1)
+    # Создание бота
+    bot = Bot(
+        token=config.bot_token,
+        default=DefaultBotProperties(
+            parse_mode=ParseMode.HTML,
+            link_preview_is_disabled=False
+        )
+    )
+    
+    # Настройка диспетчера с MemoryStorage
+    storage = MemoryStorage()
+    dp = Dispatcher(
+        storage=storage,
+        fsm_strategy=FSMStrategy.USER_IN_CHAT
+    )
+    
+    # Подключаем роутеры
+    dp.include_router(base_router)
+    logging.info(f"✅ Загружено роутеров: 1 (base)")
+    
+    return bot, dp
+
+async def setup_scheduler(bot: Bot):
+    """Настройка планировщика задач"""
+    # Используем SQLAlchemy для хранения задач
+    jobstores = {
+        'default': SQLAlchemyJobStore(
+            engine=create_engine('sqlite:///jobs.sqlite'),
+            tablename='apscheduler_jobs'
+        )
+    }
+    
+    scheduler = AsyncIOScheduler(
+        jobstores=jobstores,
+        timezone="Europe/Moscow",
+        job_defaults={
+            'coalesce': True,
+            'max_instances': 1,
+            'misfire_grace_time': 300  # 5 минут
+        }
+    )
+    
+    # Ежедневная мотивация
+    scheduler.add_job(
+        send_daily_motivation,
+        'cron',
+        hour=7,
+        minute=30,
+        args=[bot],
+        id='daily_motivation',
+        replace_existing=True,
+        name='Ежедневная мотивация'
+    )
+    
+    # Напоминания о днях рождения
+    scheduler.add_job(
+        send_birthday_reminders,
+        'cron',
+        hour=8,
+        minute=30,
+        args=[bot],
+        id='birthday_reminders',
+        replace_existing=True,
+        name='Напоминания о ДР'
+    )
+    
+    scheduler.start()
+    logging.info("✅ Планировщик запущен")
+    logging.info(f"   - Мотивация: 7:30 MSK")
+    logging.info(f"   - Дни рождения: 8:30 MSK")
+    
+    return scheduler
+
+@asynccontextmanager
+async def bot_lifespan():
+    """Контекстный менеджер для управления жизненным циклом бота"""
+    # Инициализация
+    checker = SingleInstanceChecker()
+    if not checker.acquire_lock():
+        raise RuntimeError("Бот уже запущен в другом процессе")
+    
+    bot = None
+    scheduler = None
     
     try:
-        # 3. ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ
-        try:
-            await init_db()
-            logger.info("✅ База данных успешно инициализирована")
-        except Exception as e:
-            logger.error(f"❌ Ошибка инициализации базы данных: {e}")
-            return
-
-        # 4. ИНИЦИАЛИЗАЦИЯ БОТА
-        if not config.bot_token:
-            logger.error("❌ BOT_TOKEN не найден в конфигурации!")
-            sys.exit(1)
-            
-        bot = Bot(
-            token=config.bot_token,
-            default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-        )
+        # Создание бота и планировщика
+        bot, dp = await create_bot()
+        scheduler = await setup_scheduler(bot)
         
-        dp = Dispatcher()
-        dp.include_router(base_router)
-
-        # 5. НАСТРОЙКА ПЛАНИРОВЩИКА
-        scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
-        
-        # Ежедневная мотивация с красивым фото и свежей цитатой — в 7:30 утра
-        scheduler.add_job(
-            send_daily_motivation,
-            trigger="cron",
-            hour=7,
-            minute=30,
-            args=[bot],
-            id="daily_motivation",
-            replace_existing=True,
-            misfire_grace_time=300  # 5 минут допустимой задержки
-        )
-        
-        # Напоминание о днях рождения — в 8:30 утра
-        scheduler.add_job(
-            send_birthday_reminders,
-            trigger="cron",
-            hour=8,
-            minute=30,
-            args=[bot],
-            id="birthday_reminders",
-            replace_existing=True,
-            misfire_grace_time=300
-        )
-        
-        scheduler.start()
-        logger.info("✅ Планировщик запущен: мотивация в 7:30, напоминания о ДР в 8:30")
-
-        # 6. ЗАПУСК БОТА
-        logger.info("🚀 Запуск бота на Render...")
-        
-        # Удаляем вебхук если он был (для чистого старта)
+        # Удаляем старые вебхуки
         await bot.delete_webhook(drop_pending_updates=True)
-        logger.info("✅ Вебхук удален, начинаем polling...")
+        logging.info("✅ Вебхуки очищены")
         
-        # Запускаем polling с обработкой ошибок
-        await safe_start_polling(dp, bot)
-        
-    except KeyboardInterrupt:
-        logger.info("Получен сигнал KeyboardInterrupt")
-    except SystemExit:
-        logger.info("Получен сигнал SystemExit")
-    except Exception as e:
-        logger.error(f"❌ Критическая ошибка в main(): {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+        yield bot, dp, scheduler
         
     finally:
-        # 7. КОРРЕКТНОЕ ЗАВЕРШЕНИЕ
-        logger.info("Завершение работы бота...")
+        # Завершение работы
+        logging.info("🔄 Завершение работы бота...")
         
-        try:
-            # Закрываем сессию бота
+        if scheduler and scheduler.running:
+            scheduler.shutdown(wait=False)
+            logging.info("✅ Планировщик остановлен")
+        
+        if bot:
             await bot.session.close()
-            logger.info("✅ Сессия бота закрыта")
-        except:
-            pass
-            
-        try:
-            # Останавливаем планировщик
-            if 'scheduler' in locals() and scheduler.running:
-                scheduler.shutdown()
-                logger.info("✅ Планировщик остановлен")
-        except:
-            pass
-            
-        # Освобождаем блокировку
-        instance_checker.release_lock()
-        logger.info("✅ Блокировка освобождена")
+            logging.info("✅ Сессия бота закрыта")
         
-        # Даем время на завершение асинхронных операций
-        await asyncio.sleep(1)
+        checker.release_lock()
+        logging.info("✅ Ресурсы освобождены")
 
-if __name__ == '__main__':
-    # Запускаем Flask для keep-alive (только для Web Services на Render)
-    keep_alive()
+async def main():
+    """Основная асинхронная функция"""
+    # Настройка логирования
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler('/tmp/fambot.log', encoding='utf-8')
+        ]
+    )
+    logging.getLogger('apscheduler').setLevel(logging.WARNING)
+    
+    logger = logging.getLogger(__name__)
+    
+    # Запуск Flask в отдельном потоке
+    flask_thread = Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    logger.info(f"🌐 Flask сервер запущен на порту {os.environ.get('PORT', 8080)}")
+    
+    # Обработчик конфликтов
+    conflict_handler = TelegramConflictHandler(max_retries=5)
     
     try:
-        asyncio.run(main())
+        async with bot_lifespan() as (bot, dp, scheduler):
+            logger.info("🚀 Бот запущен и готов к работе!")
+            
+            # Основной цикл обработки
+            while True:
+                try:
+                    await conflict_handler.execute_with_retry(
+                        dp.start_polling,
+                        bot,
+                        allowed_updates=dp.resolve_used_update_types(),
+                        polling_timeout=30,
+                        backoff_config=None
+                    )
+                except TelegramConflictError as e:
+                    logger.critical(f"💥 Критический конфликт: {e}")
+                    break
+                except Exception as e:
+                    logger.error(f"⚠️ Ошибка в основном цикле: {e}")
+                    await asyncio.sleep(5)  # Пауза перед перезапуском
+    
+    except RuntimeError as e:
+        logger.error(f"❌ Ошибка запуска: {e}")
     except KeyboardInterrupt:
-        logging.info("Бот остановлен пользователем")
-    except SystemExit:
-        logging.info("Бот завершил работу")
+        logger.info("👋 Завершение по запросу пользователя")
     except Exception as e:
-        logging.error(f"Непредвиденная ошибка: {e}")
-        import traceback
-        logging.error(traceback.format_exc())
+        logger.error(f"💥 Непредвиденная ошибка: {e}", exc_info=True)
+    finally:
+        logger.info("✅ Бот завершил работу")
+
+if __name__ == '__main__':
+    try:
+        # Проверка переменных окружения
+        required_vars = ['BOT_TOKEN']
+        missing = [var for var in required_vars if not os.getenv(var)]
+        
+        if missing:
+            logging.error(f"❌ Отсутствуют переменные окружения: {missing}")
+            sys.exit(1)
+        
+        # Запуск
+        asyncio.run(main())
+        
+    except KeyboardInterrupt:
+        logging.info("👋 Завершено пользователем")
+    except SystemExit:
+        pass
+    except Exception as e:
+        logging.critical(f"💥 Критическая ошибка при запуске: {e}", exc_info=True)
+        sys.exit(1)
