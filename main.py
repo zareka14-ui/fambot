@@ -12,7 +12,25 @@ from aiogram.client.default import DefaultBotProperties
 # Импорты из ваших модулей
 from config.settings import config
 from app.handlers.base import base_router, init_db # Добавили init_db сюда
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+async def send_daily_motivation(bot: Bot):
+    # Список ID чатов, куда слать уведомления (можно хранить в БД)
+    # Для начала можно просто отправить в ваш семейный чат по ID
+    chat_id = -100XXXXXXXXXX  # Замените на ID вашего семейного чата
+    
+    quotes = [
+        "Семья — это не главное. Семья — это всё. ❤️",
+        "Хороший день начинается с улыбки и чашки чая! 👋",
+        "Не забудьте сегодня сказать друг другу 'спасибо'! ✨"
+    ]
+    
+    await bot.send_message(chat_id, f"<b>Доброе утро! ☀️</b>\n\n{random.choice(quotes)}")
+
+# В функции main() перед polling:
+scheduler = AsyncIOScheduler()
+scheduler.add_job(send_daily_motivation, "cron", hour=9, minute=0, args=[bot])
+scheduler.start()
 # --- ВЕБ-СЕРВЕР ДЛЯ ПОДДЕРЖКИ ЖИЗНИ (KEEP ALIVE) ---
 app = Flask('')
 
@@ -79,3 +97,4 @@ if __name__ == '__main__':
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logging.info("Bot stopped!")
+
