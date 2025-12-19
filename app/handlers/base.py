@@ -2,7 +2,7 @@ import os
 import random
 import asyncio
 import asyncpg
-import aiohttp  # Для API цитат и Unsplash
+import aiohttp
 from datetime import datetime
 from aiogram import Router, types
 from aiogram.filters import Command
@@ -71,8 +71,8 @@ async def cmd_start(message: Message):
         "• Рейтинг полезности (+, /rating)\n"
         "• Архив цитат (/phrase)\n"
         "• Дни рождения (/др)\n"
-        "• Камень-ножницы-бумага (/knb)\n"
-        "• И многое другое!\n\n"
+        "• Погода (/погода [город])\n"
+        "• Камень-ножницы-бумага (/knb)\n\n"
         "Нажми кнопку ниже, чтобы заглянуть в игровой центр!"
     )
     
@@ -189,6 +189,7 @@ async def get_quote(message: Message):
     row = await conn.fetchrow('SELECT text, author FROM quotes ORDER BY RANDOM() LIMIT 1')
     await conn.close()
 
+    if
     if not row:
         await message.answer("Архив цитат пуст.")
     else:
@@ -211,7 +212,42 @@ async def add_birthday(message: Message):
     except:
         await message.answer("Неверный формат!\nПравильно: /др Имя ДД.ММ\nПример: /др Мама 15.03")
 
-# --- 5. УЛУЧШЕННАЯ ИГРА КАМЕНЬ-НОЖНИЦЫ-БУМАГА ---
+# --- 5. ПОГОДА (wttr.in — без ключа) ---
+async def get_weather(city: str = "Москва") -> str:
+    city_encoded = city.strip().replace(" ", "+")
+    url = f"https://wttr.in/{city_encoded}?format=%l+%c+%t+%w+%h%%25+%P&lang=ru"
+    
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(url, timeout=10) as resp:
+                if resp.status == 200:
+                    text = await resp.text()
+                    parts = text.strip().split(" +")
+                    if len(parts) >= 6:
+                        location, condition, temp, wind, humidity, pressure = parts
+                        return (
+                            f"🌤️ <b>Погода в {location}:</b>\n\n"
+                            f"{condition}\n"
+                            f"🌡️ Температура: {temp}\n"
+                            f"💨 Ветер: {wind}\n"
+                            f"💧 Влажность: {humidity}\n"
+                            f"🌀 Давление: {pressure}"
+                        )
+                    else:
+                        return "🌧️ Данные погоды временно недоступны."
+                else:
+                    return "🌧️ Не удалось получить погоду."
+        except:
+            return "🌧️ Ошибка связи с сервисом погоды."
+
+@base_router.message(Command("погода", "weather"))
+async def cmd_weather(message: Message):
+    args = message.text.split(maxsplit=1)
+    city = args[1].strip() if len(args) > 1 else "Москва"
+    weather_text = await get_weather(city)
+    await message.answer(weather_text)
+
+# --- 6. УЛУЧШЕННАЯ КНБ ---
 choices_emoji = {"камень": "🪨", "ножницы": "✂️", "бумага": "📄"}
 win_map = {"камень": "ножницы", "ножницы": "бумага", "бумага": "камень"}
 
@@ -223,7 +259,7 @@ async def cmd_knb_start(message: Message):
             InlineKeyboardButton(text="✂️ Ножницы", callback_data="knb_ножницы"),
             InlineKeyboardButton(text="📄 Бумага", callback_data="knb_бумага")
         ],
-        [InlineKeyboardButton(text="📊 Моя статистика", callback_data="knb_my_stats")]
+        [InlineKeyboardButton(text="📊 Моя стати remarkстика", callback_data="knb_my_stats")]
     ])
     
     await message.answer(
@@ -236,7 +272,6 @@ async def process_knb_choice(callback: CallbackQuery):
     user_choice = callback.data.split("_")[1]
     bot_choice = random.choice(["камень", "ножницы", "бумага"])
     
-    # Анимация
     await callback.message.edit_text(
         f"<b>{callback.from_user.first_name} vs Бот</b>\n\n"
         f"Ты: {choices_emoji[user_choice]}\n"
@@ -244,7 +279,6 @@ async def process_knb_choice(callback: CallbackQuery):
     )
     await asyncio.sleep(1.8)
     
-    # Результат
     if user_choice == bot_choice:
         result = "🤝 Ничья!"
         stat_field = "draws"
@@ -255,7 +289,6 @@ async def process_knb_choice(callback: CallbackQuery):
         result = "😎 Я победил!"
         stat_field = "losses"
     
-    # Статистика
     conn = await get_db_connection()
     await conn.execute(f'''
         INSERT INTO knb_stats (user_id, {stat_field}) VALUES ($1, 1)
@@ -334,12 +367,11 @@ async def knb_top(message: Message):
         medal = medals[i] if i < 3 else f"{i+1}."
         total = row['wins'] + row['losses'] + row['draws']
         winrate = round(row['wins'] / total * 100, 1) if total > 0 else 0
-        name = "Неизвестный"  # Можно улучшить через кэш имён
-        text += f"{medal} <b>{name}</b>: {row['wins']} побед ({winrate}%)\n"
+        text += f"{medal} <b>User</b>: {row['wins']} побед ({winrate}%)\n"
     
     await message.answer(text)
 
-# --- 6. РАЗВЛЕЧЕНИЯ ---
+# --- 7. РАЗВЛЕЧЕНИЯ ---
 @base_router.message(Command("dice"))
 async def play_dice(message: Message):
     await message.answer_dice(emoji="🎲")
@@ -384,6 +416,7 @@ async def fun_help(message: Message):
         "/buy • /list • /clear • /удалить\n"
         "/quote • /phrase\n"
         "/др Имя ДД.ММ\n"
+        "/погода [город]\n"
         "/knb • /knbtop\n"
         "/remind • /rating • /who"
     )
@@ -397,6 +430,7 @@ async def process_callback_help(callback_query: CallbackQuery):
         "🛒 /list • /удалить [номер]\n"
         "📜 /phrase\n"
         "🎉 /др Имя ДД.ММ\n"
+        "🌤️ /погода [город]\n"
         "🎮 /knb — игра с ботом\n"
         "⏰ /remind [мин] [текст]"
     )
@@ -407,10 +441,11 @@ async def process_callback_rating(callback_query: CallbackQuery):
     await show_rating(callback_query.message)
     await callback_query.answer()
 
-# --- ФУНКЦИИ ДЛЯ SCHEDULER (в main.py) ---
+# --- SCHEDULER ФУНКЦИИ ---
 async def send_daily_motivation(bot):
     chat_id = -1001130889326
     
+    # Цитата
     async with aiohttp.ClientSession() as session:
         try:
             async with session.get("http://api.forismatic.com/api/1.0/?method=getQuote&format=json&lang=ru") as resp:
@@ -424,8 +459,17 @@ async def send_daily_motivation(bot):
         except:
             quote_text = "Доброе утро, родные! Пусть день будет полон тепла и улыбок ❤️"
     
-    full_text = f"<b>☀️ Доброе утро, любимая семья! ☀️</b>\n\n{quote_text}\n\nС любовью от вашего бота 🌹"
+    # Погода
+    weather_text = await get_weather("Москва")  # Измените город при необходимости
     
+    full_text = (
+        f"<b>☀️ Доброе утро, любимая семья! ☀️</b>\n\n"
+        f"{quote_text}\n\n"
+        f"{weather_text}\n\n"
+        f"С любовью от вашего бота 🌹"
+    )
+    
+    # Фото
     keywords = ["family morning", "good morning", "happy family", "cozy breakfast", "sunrise family"]
     query = random.choice(keywords)
     photo_url = f"https://source.unsplash.com/featured/800x600/?{query.replace(' ', '%20')}"
