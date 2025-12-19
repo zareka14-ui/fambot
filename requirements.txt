@@ -1,7 +1,7 @@
-aiogram
-flask
-python-dotenv
-asyncpg
-sqlalchemy
-apscheduler
-aiohttp
+aiogram==3.10.0
+flask==3.0.2
+python-dotenv==1.0.0
+asyncpg==0.29.0
+sqlalchemy==2.0.25
+apscheduler==3.10.4
+aiohttp==3.9.3
