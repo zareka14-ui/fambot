@@ -76,7 +76,7 @@ async def main():
     # 3. НАСТРОЙКА ПЛАНИРОВЩИКА (внутри main, чтобы видеть bot)
     scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
     # Запуск каждый день в 9:00 утра
-    scheduler.add_job(send_daily_motivation, "cron", hour=9, minute=0, args=[bot])
+    scheduler.add_job(send_daily_motivation, "cron", hour=6, minute=0, args=[bot])
     scheduler.start()
     logging.info("Scheduler started.")
 
@@ -94,4 +94,5 @@ if __name__ == '__main__':
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logging.info("Bot stopped!")
+
 
