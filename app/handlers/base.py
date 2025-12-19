@@ -13,7 +13,9 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 async def get_db_connection():
     return await asyncpg.connect(DATABASE_URL)
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
-
+@base_router.message(Command("id"))
+async def get_chat_id(message: Message):
+    await message.answer(f"ID этого чата: <code>{message.chat.id}</code>")
 @base_router.message(Command("start"))
 async def cmd_start(message: Message):
     user_name = message.from_user.first_name
@@ -226,4 +228,5 @@ async def fun_help(message: Message):
     await message.answer(
         "<b>Команды:</b>\n/buy, /list, /clear\n/quote, /phrase\n/remind, /rating\n/knb, /dice, /who"
     )
+
 
