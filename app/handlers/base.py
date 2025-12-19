@@ -4,26 +4,48 @@ import asyncio
 import asyncpg
 from aiogram import Router, types
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 
 base_router = Router()
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# --- Функция подключения к БД ---
+# --- ФУНКЦИЯ ПОДКЛЮЧЕНИЯ К БД ---
 async def get_db_connection():
     return await asyncpg.connect(DATABASE_URL)
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+
+# --- ИНИЦИАЛИЗАЦИЯ ТАБЛИЦ ---
+async def init_db():
+    conn = await get_db_connection()
+    await conn.execute('''
+        CREATE TABLE IF NOT EXISTS reputation (
+            user_id BIGINT PRIMARY KEY,
+            name TEXT,
+            score INTEGER DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS shopping_list (
+            id SERIAL PRIMARY KEY,
+            item TEXT
+        );
+        CREATE TABLE IF NOT EXISTS quotes (
+            id SERIAL PRIMARY KEY,
+            text TEXT,
+            author TEXT
+        );
+    ''')
+    await conn.close()
+
+# --- КОМАНДЫ ПОМОЩИ И СТАРТА ---
+
 @base_router.message(Command("id"))
 async def get_chat_id(message: Message):
     await message.answer(f"ID этого чата: <code>{message.chat.id}</code>")
+
 @base_router.message(Command("start"))
 async def cmd_start(message: Message):
     user_name = message.from_user.first_name
     
-    # Кнопки под сообщением
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
-            # Кнопка для открытия Mini App (замените URL на свой, если будет)
             InlineKeyboardButton(text="🎮 Открыть игры", web_app=WebAppInfo(url="https://prizes.gamee.com/"))
         ],
         [
@@ -45,28 +67,9 @@ async def cmd_start(message: Message):
     )
     
     await message.answer(welcome_text, reply_markup=keyboard)
-# --- Инициализация таблиц ---
-async def init_db():
-    conn = await get_db_connection()
-    await conn.execute('''
-        CREATE TABLE IF NOT EXISTS reputation (
-            user_id BIGINT PRIMARY KEY,
-            name TEXT,
-            score INTEGER DEFAULT 0
-        );
-        CREATE TABLE IF NOT EXISTS shopping_list (
-            id SERIAL PRIMARY KEY,
-            item TEXT
-        );
-        CREATE TABLE IF NOT EXISTS quotes (
-            id SERIAL PRIMARY KEY,
-            text TEXT,
-            author TEXT
-        );
-    ''')
-    await conn.close()
 
 # --- 1. СИСТЕМА РЕПУТАЦИИ ---
+
 @base_router.message(lambda message: message.text in ["+", "++", "спасибо", "Спасибо", "👍"])
 async def add_reputation(message: Message):
     if not message.reply_to_message or message.reply_to_message.from_user.is_bot:
@@ -110,9 +113,9 @@ async def show_rating(message: Message):
     await message.answer(res)
 
 # --- 2. СПИСОК ПОКУПОК ---
+
 @base_router.message(Command("купить", "buy"))
 async def add_to_shopping(message: Message):
-    # Убираем команду из текста, чтобы оставить только название товара
     item = message.text.split(maxsplit=1)[1] if len(message.text.split()) > 1 else None
     
     if not item:
@@ -145,6 +148,7 @@ async def clear_shopping(message: Message):
     await message.answer("🧹 Список очищен! Кто-то молодец!")
 
 # --- 3. АРХИВ ЦИТАТ ---
+
 @base_router.message(Command("цитата", "quote"))
 async def save_quote(message: Message):
     if not message.reply_to_message or not message.reply_to_message.text:
@@ -171,6 +175,7 @@ async def get_quote(message: Message):
         await message.answer(f"📜\n\n«{row['text']}»\n(с) <b>{row['author']}</b>")
 
 # --- 4. РАЗВЛЕЧЕНИЯ И НАПОМИНАЛКИ ---
+
 @base_router.message(Command("dice"))
 async def play_dice(message: Message):
     await message.answer_dice(emoji="🎲")
@@ -229,4 +234,21 @@ async def fun_help(message: Message):
         "<b>Команды:</b>\n/buy, /list, /clear\n/quote, /phrase\n/remind, /rating\n/knb, /dice, /who"
     )
 
+# --- ОБРАБОТЧИКИ КНОПОК (CALLBACKS) ---
 
+@base_router.callback_query(lambda c: c.data == "help_callback")
+async def process_callback_help(callback_query: types.CallbackQuery):
+    help_text = (
+        "<b>Справка по командам:</b>\n\n"
+        "🛒 /buy [товар] — добавить покупку\n"
+        "📈 /rating — рейтинг полезности\n"
+        "📜 /phrase — случайная цитата\n"
+        "⏰ /remind [мин] [текст] — таймер"
+    )
+    await callback_query.message.answer(help_text)
+    await callback_query.answer()
+
+@base_router.callback_query(lambda c: c.data == "rating_callback")
+async def process_callback_rating(callback_query: types.CallbackQuery):
+    await show_rating(callback_query.message)
+    await callback_query.answer()
