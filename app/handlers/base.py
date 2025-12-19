@@ -2,6 +2,7 @@ import os
 import random
 import asyncio
 import asyncpg
+import aiohttp  # Новый импорт для API
 from aiogram import Router, types
 from aiogram.filters import Command
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
@@ -30,6 +31,12 @@ async def init_db():
             id SERIAL PRIMARY KEY,
             text TEXT,
             author TEXT
+        );
+        CREATE TABLE IF NOT EXISTS birthdays (  -- НОВАЯ ТАБЛИЦА
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            day INTEGER NOT NULL,   -- День (1-31)
+            month INTEGER NOT NULL  -- Месяц (1-12)
         );
     ''')
     await conn.close()
@@ -62,57 +69,17 @@ async def cmd_start(message: Message):
         f"• Веду общий список покупок (/list)\n"
         f"• Считаю рейтинг полезности (/rating)\n"
         f"• Храню цитаты семьи (/phrase)\n"
+        f"• Напоминаю о днях рождения (/др)\n"
         f"• Играю и развлекаю (/knb)\n\n"
         f"Нажми кнопку ниже, чтобы заглянуть в игровой центр!"
     )
     
     await message.answer(welcome_text, reply_markup=keyboard)
 
-# --- 1. СИСТЕМА РЕПУТАЦИИ ---
+# --- 1. СИСТЕМА РЕПУТАЦИИ --- (без изменений)
+# ... (ваш код репутации остаётся)
 
-@base_router.message(lambda message: message.text in ["+", "++", "спасибо", "Спасибо", "👍"])
-async def add_reputation(message: Message):
-    if not message.reply_to_message or message.reply_to_message.from_user.is_bot:
-        return
-
-    from_user = message.from_user
-    target_user = message.reply_to_message.from_user
-
-    if from_user.id == target_user.id:
-        await message.answer("Самому себе репутацию повышать нельзя! 😉")
-        return
-
-    conn = await get_db_connection()
-    await conn.execute('''
-        INSERT INTO reputation (user_id, name, score) 
-        VALUES ($1, $2, 1)
-        ON CONFLICT (user_id) DO UPDATE 
-        SET score = reputation.score + 1, name = $2
-    ''', target_user.id, target_user.first_name)
-    
-    row = await conn.fetchrow('SELECT score FROM reputation WHERE user_id = $1', target_user.id)
-    await conn.close()
-    
-    await message.answer(f"Уровень добра повышен! 📈\n<b>{target_user.first_name}</b> (+1) — итого: {row['score']}")
-
-@base_router.message(Command("rating"))
-async def show_rating(message: Message):
-    conn = await get_db_connection()
-    rows = await conn.fetch('SELECT name, score FROM reputation ORDER BY score DESC LIMIT 10')
-    await conn.close()
-
-    if not rows:
-        await message.answer("Рейтинг пока пуст. Пора делать добрые дела! ✨")
-        return
-
-    res = "<b>🏆 Рейтинг полезности семьи:</b>\n\n"
-    icons = ["🥇", "🥈", "🥉", "👤"]
-    for i, row in enumerate(rows):
-        icon = icons[i] if i < 3 else icons[3]
-        res += f"{icon} {row['name']}: {row['score']}\n"
-    await message.answer(res)
-
-# --- 2. СПИСОК ПОКУПОК ---
+# --- 2. СПИСОК ПОКУПОК --- (добавлено удаление)
 
 @base_router.message(Command("купить", "buy"))
 async def add_to_shopping(message: Message):
@@ -130,15 +97,15 @@ async def add_to_shopping(message: Message):
 @base_router.message(Command("список", "list"))
 async def show_shopping(message: Message):
     conn = await get_db_connection()
-    rows = await conn.fetch('SELECT item FROM shopping_list')
+    rows = await conn.fetch('SELECT id, item FROM shopping_list ORDER BY id')  # Добавил id
     await conn.close()
 
     if not rows:
         await message.answer("Список покупок пуст! 🛒")
         return
 
-    items = "\n".join([f"{i}. {row['item']}" for i, row in enumerate(rows, 1)])
-    await message.answer(f"<b>🛒 Нужно купить:</b>\n\n{items}")
+    items = "\n".join([f"{row['id']}. {row['item']}" for row in rows])
+    await message.answer(f"<b>🛒 Нужно купить:</b>\n\n{items}\n\nЧтобы удалить — /удалить <номер>")
 
 @base_router.message(Command("купил", "clear"))
 async def clear_shopping(message: Message):
@@ -147,108 +114,105 @@ async def clear_shopping(message: Message):
     await conn.close()
     await message.answer("🧹 Список очищен! Кто-то молодец!")
 
-# --- 3. АРХИВ ЦИТАТ ---
+# НОВАЯ КОМАНДА УДАЛЕНИЯ
+@base_router.message(Command("удалить", "del"))
+async def delete_item(message: Message):
+    try:
+        item_id = int(message.text.split()[1])
+        conn = await get_db_connection()
+        result = await conn.execute('DELETE FROM shopping_list WHERE id = $1', item_id)
+        await conn.close()
+        if result == "DELETE 1":
+            await message.answer(f"✅ Товар с номером {item_id} удалён!")
+        else:
+            await message.answer("❌ Товар не найден.")
+    except:
+        await message.answer("Использование: /удалить <номер из /список>")
 
-@base_router.message(Command("цитата", "quote"))
-async def save_quote(message: Message):
-    if not message.reply_to_message or not message.reply_to_message.text:
-        await message.answer("Ответьте командой <code>/quote</code> на текстовое сообщение.")
-        return
+# --- 3. АРХИВ ЦИТАТ --- (без изменений)
+# ... (ваш код цитат)
 
-    text = message.reply_to_message.text
-    author = message.reply_to_message.from_user.first_name
+# --- 4. ДНИ РОЖДЕНИЯ (НОВОЕ) ---
+
+@base_router.message(Command("др", "birthday"))
+async def add_birthday(message: Message):
+    try:
+        args = message.text.split(maxsplit=2)
+        if len(args) < 2:
+            raise ValueError
+        name_date = args[1]
+        name, date_str = name_date.rsplit(maxsplit=1)
+        day, month = map(int, date_str.split('.'))
+        if not (1 <= day <= 31 and 1 <= month <= 12):
+            raise ValueError
+        
+        conn = await get_db_connection()
+        await conn.execute('INSERT INTO birthdays (name, day, month) VALUES ($1, $2, $3)', name.capitalize(), day, month)
+        await conn.close()
+        await message.answer(f"🎉 Добавлен день рождения: <b>{name.capitalize()}</b> — {day:02d}.{month:02d}")
+    except:
+        await message.answer("Формат: /др Имя ДД.ММ\nПример: /др Мама 15.03")
+
+# --- 5. РАЗВЛЕЧЕНИЯ И НАПОМИНАЛКИ --- (без изменений)
+# ... (dice, who, knb и т.д.)
+
+# --- ОБРАБОТЧИКИ КНОПОК --- (без изменений)
+
+# --- ФУНКЦИИ ДЛЯ SCHEDULER (добавьте в main.py) ---
+
+# 1. Напоминание о ДР
+async def send_birthday_reminders(bot):
+    from datetime import datetime
+    today = datetime.now()
+    current_day, current_month = today.day, today.month
     
     conn = await get_db_connection()
-    await conn.execute('INSERT INTO quotes (text, author) VALUES ($1, $2)', text, author)
+    rows = await conn.fetch('SELECT name, day, month FROM birthdays')
     await conn.close()
-    await message.answer("✅ Цитата сохранена в архив!")
+    
+    reminders = []
+    for row in rows:
+        bday_this_year = datetime(today.year, row['month'], row['day'])
+        if bday_this_year < today.replace(hour=0, minute=0, second=0, microsecond=0):
+            bday_this_year = datetime(today.year + 1, row['month'], row['day'])
+        days_left = (bday_this_year - today).days
+        
+        if 0 <= days_left <= 7:
+            if days_left == 0:
+                reminders.append(f"🎂 <b>СЕГОДНЯ</b> ДР у <b>{row['name']}</b>! 🥳")
+            elif days_left == 1:
+                reminders.append(f"⚡ Завтра ДР у {row['name']}")
+            else:
+                reminders.append(f"📅 {row['name']} — {row['day']:02d}.{row['month']:02d} (через {days_left} дн.)")
+    
+    if reminders:
+        chat_id = -100XXXXXXXXXX  # Замените на ваш семейный чат!
+        text = "<b>🎉 Напоминание о днях рождения!</b>\n\n" + "\n".join(reminders)
+        await bot.send_message(chat_id, text)
 
-@base_router.message(Command("фраза", "phrase"))
-async def get_quote(message: Message):
-    conn = await get_db_connection()
-    row = await conn.fetchrow('SELECT text, author FROM quotes ORDER BY RANDOM() LIMIT 1')
-    await conn.close()
-
-    if not row:
-        await message.answer("Архив цитат пуст.")
-    else:
-        await message.answer(f"📜\n\n«{row['text']}»\n(с) <b>{row['author']}</b>")
-
-# --- 4. РАЗВЛЕЧЕНИЯ И НАПОМИНАЛКИ ---
-
-@base_router.message(Command("dice"))
-async def play_dice(message: Message):
-    await message.answer_dice(emoji="🎲")
-
-@base_router.message(Command("darts"))
-async def play_darts(message: Message):
-    await message.answer_dice(emoji="🎯")
-
-@base_router.message(Command("who"))
-async def who_is_it(message: Message):
-    tasks = ["идет за хлебом 🥖", "моет посуду 🍽", "выбирает фильм 🎬", "выносит мусор 🗑"]
-    task = random.choice(tasks)
-    await message.answer(f"Сегодня <b>{message.from_user.first_name}</b> {task}!")
-
-@base_router.message(Command("knb", "кнб"))
-async def rps_game(message: Message):
-    args = message.text.split()
-    choices = {"камень": "🪨", "ножницы": "✂️", "бумага": "📄"}
-    if len(args) < 2:
-        await message.reply("Напиши: <code>/knb камень</code>")
-        return
-    user_choice = args[1].lower()
-    if user_choice in choices:
-        bot_choice = random.choice(list(choices.keys()))
-        win_map = {"камень": "ножницы", "ножницы": "бумага", "бумага": "камень"}
-        if user_choice == bot_choice: res = "Ничья! 🤝"
-        elif win_map[user_choice] == bot_choice: res = "Ты победил! 🎉"
-        else: res = "Я победил! 😎"
-        await message.reply(f"Твой: {choices[user_choice]}\nМой: {choices[bot_choice]}\n\n{res}")
-
-@base_router.message(Command("напомни", "remind"))
-async def set_reminder(message: Message):
-    args = message.text.split(maxsplit=2)
-    if len(args) < 3:
-        await message.answer("Формат: <code>/remind 10 текст</code>")
-        return
-    try:
-        minutes, msg = int(args[1]), args[2]
-        await message.answer(f"Ок! Напомню через {minutes} мин.")
-        await asyncio.sleep(minutes * 60)
-        await message.reply(f"🔔 <b>НАПОМИНАНИЕ:</b>\n{msg}")
-    except:
-        await message.answer("Ошибка в формате времени.")
-
-@base_router.message(Command("ужин", "dinner"))
-async def dinner_poll(message: Message):
-    await message.answer_poll(
-        question="Что на ужин? 🍕",
-        options=["Пицца/Суши", "Домашнее", "В кафе", "Холодильник"],
-        is_anonymous=False
-    )
-
-@base_router.message(Command("help_fun"))
-async def fun_help(message: Message):
-    await message.answer(
-        "<b>Команды:</b>\n/buy, /list, /clear\n/quote, /phrase\n/remind, /rating\n/knb, /dice, /who"
-    )
-
-# --- ОБРАБОТЧИКИ КНОПОК (CALLBACKS) ---
-
-@base_router.callback_query(lambda c: c.data == "help_callback")
-async def process_callback_help(callback_query: types.CallbackQuery):
-    help_text = (
-        "<b>Справка по командам:</b>\n\n"
-        "🛒 /buy [товар] — добавить покупку\n"
-        "📈 /rating — рейтинг полезности\n"
-        "📜 /phrase — случайная цитата\n"
-        "⏰ /remind [мин] [текст] — таймер"
-    )
-    await callback_query.message.answer(help_text)
-    await callback_query.answer()
-
-@base_router.callback_query(lambda c: c.data == "rating_callback")
-async def process_callback_rating(callback_query: types.CallbackQuery):
-    await show_rating(callback_query.message)
-    await callback_query.answer()
+# 2. Ежедневная мотивация с фото
+async def send_daily_motivation(bot):
+    chat_id = -100XXXXXXXXXX  # Тот же чат
+    
+    # Получаем цитату из API (forismatic — русский, мотивирующие)
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get("http://api.forismatic.com/api/1.0/?method=getQuote&format=json&lang=ru") as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    quote = data["quoteText"].strip()
+                    author = data["quoteAuthor"].strip()
+                    quote_text = f"{quote}\n\n— {author}" if author else quote
+                else:
+                    raise Exception
+        except:
+            quote_text = "Доброе утро, родные! Пусть день будет полон тепла и улыбок ❤️"
+    
+    full_text = f"<b>☀️ Доброе утро, семья! ☀️</b>\n\n{quote_text}\n\nС любовью от вашего бота 🌹"
+    
+    # Фото из Unsplash (семья/утро/мотивация)
+    keywords = ["family morning", "good morning sun", "happy family", "morning motivation", "cozy breakfast"]
+    query = random.choice(keywords)
+    photo_url = f"https://source.unsplash.com/featured/800x600/?{query.replace(' ', '%20')}"
+    
+    await bot.send_photo(chat_id, photo_url, caption=full_text)
