@@ -3,9 +3,9 @@ import random
 import asyncio
 import asyncpg
 import logging
-import aiohttp  # Нужно для запросов к онлайн API
+import aiohttp
 from datetime import datetime
-from aiogram import Router, types, F
+from aiogram import Router, types, F, Bot  # Добавили Bot сюда
 from aiogram.filters import Command
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -53,7 +53,7 @@ async def send_motivation_to_chat(bot, chat_id: int):
 
 # --- КОМАНДА МОТИВАЦИИ ---
 @base_router.message(Command("motivation"))
-async def cmd_motivation(message: Message, bot: types.Bot):
+async def cmd_motivation(message: Message, bot: Bot):
     await send_motivation_to_chat(bot, message.chat.id)
 
 # --- РЕПУТАЦИЯ И РЕЙТИНГ ---
@@ -182,3 +182,4 @@ async def cmd_help(message: Message):
 
 @base_router.message(Command("id"))
 async def get_id(message: Message): await message.answer(f"ID чата: <code>{message.chat.id}</code>")
+
