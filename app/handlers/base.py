@@ -9,55 +9,35 @@ from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, W
 base_router = Router()
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# --- Функция подключения к БД ---
 async def get_db_connection():
     return await asyncpg.connect(DATABASE_URL)
 
-# --- Инициализация таблиц ---
 async def init_db():
     conn = await get_db_connection()
     await conn.execute('''
-        CREATE TABLE IF NOT EXISTS reputation (
-            user_id BIGINT PRIMARY KEY, 
-            name TEXT, 
-            score INTEGER DEFAULT 0
-        );
-        CREATE TABLE IF NOT EXISTS shopping_list (
-            id SERIAL PRIMARY KEY, 
-            item TEXT
-        );
-        CREATE TABLE IF NOT EXISTS quotes (
-            id SERIAL PRIMARY KEY, 
-            text TEXT, 
-            author TEXT
-        );
+        CREATE TABLE IF NOT EXISTS reputation (user_id BIGINT PRIMARY KEY, name TEXT, score INTEGER DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS shopping_list (id SERIAL PRIMARY KEY, item TEXT);
+        CREATE TABLE IF NOT EXISTS quotes (id SERIAL PRIMARY KEY, text TEXT, author TEXT);
     ''')
     await conn.close()
 
-# --- Вспомогательная функция для рейтинга (чтобы кнопки не ломались) ---
+# --- ЛОГИКА РЕЙТИНГА ---
 async def show_rating_logic(message: Message):
     conn = await get_db_connection()
     rows = await conn.fetch('SELECT name, score FROM reputation ORDER BY score DESC LIMIT 10')
     await conn.close()
-
     if not rows:
         await message.answer("Рейтинг пока пуст. Пора делать добрые дела! ✨")
         return
-
-    res = "<b>🏆 Рейтинг полезности семьи:</b>\n\n"
+    res = "<b>🏆 Топ активных членов семьи:</b>\n\n"
     for i, row in enumerate(rows, 1):
         res += f"{i}. {row['name']}: {row['score']}\n"
     await message.answer(res)
 
-# --- Обработчики команд ---
-
-@base_router.message(Command("id"))
-async def get_chat_id(message: Message):
-    await message.answer(f"ID этого чата: <code>{message.chat.id}</code>")
+# --- КОМАНДЫ ---
 
 @base_router.message(Command("start"))
 async def cmd_start(message: Message):
-    user_name = message.from_user.first_name
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎮 Игры", web_app=WebAppInfo(url="https://prizes.gamee.com/"))],
         [
@@ -65,51 +45,84 @@ async def cmd_start(message: Message):
             InlineKeyboardButton(text="📈 Рейтинг", callback_data="rating_callback")
         ]
     ])
-    await message.answer(f"<b>Привет, {user_name}! 👋</b>\nЯ ваш семейный помощник.", reply_markup=keyboard)
+    await message.answer(f"<b>Привет, {message.from_user.first_name}! 👋</b>\nЯ ваш семейный бот-помощник.", reply_markup=keyboard)
 
-@base_router.message(Command("rating"))
-async def cmd_rating(message: Message):
-    await show_rating_logic(message)
+@base_router.message(Command("help"))
+async def cmd_help(message: Message):
+    text = (
+        "<b>🏠 Команды Домового:</b>\n\n"
+        "🛒 <b>Покупки:</b> /buy [текст], /list, /clear\n"
+        "📈 <b>Рейтинг:</b> /rating (или + в ответ человеку)\n"
+        "📜 <b>Цитаты:</b> /quote (в ответ), /phrase\n"
+        "🎮 <b>Игры:</b> /dice, /darts, /knb [камень/ножницы/бумага]\n"
+        "👥 <b>Кто сегодня:</b> /who [действие]"
+    )
+    await message.answer(text)
 
-# --- Обработчики кнопок (Callbacks) ---
+@base_router.message(Command("id"))
+async def get_id(message: Message):
+    await message.answer(f"ID этого чата: <code>{message.chat.id}</code>")
 
-@base_router.callback_query(lambda c: c.data == "help_callback")
-async def process_help(callback: types.CallbackQuery):
-    await callback.message.answer("<b>Команды:</b>\n/buy - купить\n/list - список\n/phrase - случайная цитата")
-    await callback.answer()
-
-@base_router.callback_query(lambda c: c.data == "rating_callback")
-async def process_rating(callback: types.CallbackQuery):
-    await show_rating_logic(callback.message)
-    await callback.answer()
-
-# --- Покупки ---
-
-@base_router.message(Command("buy", "купить"))
-async def add_to_shopping(message: Message):
-    item = message.text.split(maxsplit=1)[1] if len(message.text.split()) > 1 else None
-    if not item:
-        await message.answer("Напишите: <code>/buy хлеб</code>")
+# --- СИСТЕМА РЕПУТАЦИИ (ОТВЕТОМ НА СООБЩЕНИЕ) ---
+@base_router.message(lambda message: message.text and message.text.lower() in ["+", "++", "спасибо", "👍"] and message.reply_to_message)
+async def add_reputation(message: Message):
+    target_user = message.reply_to_message.from_user
+    if target_user.id == message.from_user.id:
+        await message.answer("Нельзя повышать рейтинг самому себе! 😉")
         return
+    
+    conn = await get_db_connection()
+    await conn.execute('''
+        INSERT INTO reputation (user_id, name, score) VALUES ($1, $2, 1)
+        ON CONFLICT (user_id) DO UPDATE SET score = reputation.score + 1, name = $2
+    ''', target_user.id, target_user.first_name)
+    await conn.close()
+    await message.answer(f"Рейтинг пользователя <b>{target_user.first_name}</b> увеличен! 📈")
+
+# --- СПИСОК ПОКУПОК ---
+@base_router.message(Command("buy"))
+async def add_buy(message: Message):
+    item = message.text.replace("/buy", "").strip()
+    if not item: return await message.answer("Напишите: /buy Хлеб")
     conn = await get_db_connection()
     await conn.execute('INSERT INTO shopping_list (item) VALUES ($1)', item)
     await conn.close()
     await message.answer(f"✅ Добавлено: {item}")
 
-@base_router.message(Command("list", "список"))
-async def show_shopping(message: Message):
+@base_router.message(Command("list"))
+async def list_buy(message: Message):
     conn = await get_db_connection()
     rows = await conn.fetch('SELECT item FROM shopping_list')
     await conn.close()
-    if not rows:
-        await message.answer("Список покупок пуст!")
-        return
-    items = "\n".join([f"• {row['item']}" for row in rows])
-    await message.answer(f"<b>🛒 Купить:</b>\n{items}")
+    if not rows: return await message.answer("Список пуст!")
+    text = "<b>🛒 Нужно купить:</b>\n\n" + "\n".join([f"• {r['item']}" for r in rows])
+    await message.answer(text)
 
-@base_router.message(Command("clear", "купил"))
-async def clear_shopping(message: Message):
+@base_router.message(Command("clear"))
+async def clear_buy(message: Message):
     conn = await get_db_connection()
     await conn.execute('DELETE FROM shopping_list')
     await conn.close()
-    await message.answer("🧹 Список очищен!")
+    await message.answer("🧹 Список покупок очищен!")
+
+# --- ИГРЫ ---
+@base_router.message(Command("who"))
+async def who_is_it(message: Message):
+    action = message.text.replace("/who", "").strip()
+    if not action: action = "сегодня дежурный"
+    await message.answer(f"Я думаю, что <b>{action}</b> — это ты!") # Упрощено для примера
+
+@base_router.message(Command("dice"))
+async def dice(message: Message):
+    await message.answer_dice("🎲")
+
+# --- CALLBACKS ---
+@base_router.callback_query(lambda c: c.data == "help_callback")
+async def help_cb(c: types.CallbackQuery):
+    await cmd_help(c.message)
+    await c.answer()
+
+@base_router.callback_query(lambda c: c.data == "rating_callback")
+async def rating_cb(c: types.CallbackQuery):
+    await show_rating_logic(c.message)
+    await c.answer()
