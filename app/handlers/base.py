@@ -116,3 +116,45 @@ async def list_buy(message: Message):
     if not rows: return await message.answer("Список пуст!")
     text = "<b>🛒 Нужно купить:</b>\n" + "\n".join([f"• {r['item']}" for r in rows])
     await message.answer(text)
+
+# --- УЛУЧШЕННЫЙ РАНДОМАЙЗЕР (КТО СЕГОДНЯ) ---
+@base_router.message(Command("dishes", "trash", "walk"))
+async def who_is_it_special(message: Message):
+    conn = await get_db_connection()
+    # Выбираем случайного человека из базы репутации
+    row = await conn.fetchrow('SELECT name FROM reputation ORDER BY RANDOM() LIMIT 1')
+    await conn.close()
+    
+    name = row['name'] if row else message.from_user.first_name
+    
+    command = message.text.split('@')[0] # убираем имя бота если оно есть
+    if "/dishes" in command:
+        await message.answer(f"🧼 Сегодня посуду моет <b>{name}</b>!")
+    elif "/trash" in command:
+        await message.answer(f"🗑 Мусор выносит <b>{name}</b>. Без вариантов!")
+    elif "/walk" in command:
+        await message.answer(f"🦮 На прогулку идет <b>{name}</b>. Хорошей погоды!")
+
+# --- СЛУЧАЙНЫЙ РЕЦЕПТ ---
+@base_router.message(Command("dinner_idea"))
+async def dinner_idea(message: Message):
+    recipes = [
+        "Pasta Carbonara: Спагетти, бекон, сыр, яйцо. 🍝",
+        "Брускетты: Хлеб, томаты, чеснок, оливковое масло. 🥖",
+        "Курица карри: Грудка, сливки, приправа карри, рис. 🍛",
+        "Омлет по-французски: 3 яйца, сливочное масло, зелень. 🍳",
+        "Салат Цезарь: Курица, салат, сухарики, соус. 🥗"
+    ]
+    await message.answer(f"🍴 Идея для ужина:\n<b>{random.choice(recipes)}</b>")
+
+# --- ПРАВДА ИЛИ ДЕЙСТВИЕ ---
+@base_router.message(Command("game"))
+async def truth_or_dare(message: Message):
+    tasks = [
+        "Расскажи свой самый неловкий случай из детства. 👶",
+        "Покажи последнее фото в галерее телефона. 📸",
+        "Сделай комплимент каждому члену семьи. ❤️",
+        "Изобрази кого-то из присутствующих без слов. 🎭",
+        "Расскажи, что тебе больше всего нравится в нашей семье. 🏠"
+    ]
+    await message.answer(f"🎲 Задание для чата:\n<b>{random.choice(tasks)}</b>")
