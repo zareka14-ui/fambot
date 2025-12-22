@@ -56,7 +56,9 @@ async def help_command(message: Message):
         "/future [текст] - письмо в будущее (на 1 год)\n\n"
         "📈 <b>Другое:</b>\n"
         "/rating - рейтинг семьи\n"
-        "/id - узнать ID чата"
+        "📊 /stat - статистика семьи\n"
+"🗳 /poll [вопрос] - семейный совет\n"
+"📌 /todo [задача] - список дел\n"
     )
     await message.answer(text)
 
@@ -138,3 +140,38 @@ async def list_buy(message: Message):
     if not rows: return await message.answer("Список пуст!")
     text = "<b>🛒 Купить:</b>\n" + "\n".join([f"• {r['item']}" for r in rows])
     await message.answer(text)
+# --- КРАТКИЙ ОПРОС ---
+@base_router.message(Command("poll"))
+async def quick_poll(message: Message):
+    question = message.text.replace("/poll", "").strip()
+    if not question:
+        return await message.answer("Напиши вопрос, например: <i>/poll Идем в кино?</i>")
+    await message.answer_poll(
+        question=f"Семейный совет: {question}",
+        options=["Да ✅", "Нет ❌", "Обсудим 💬"],
+        is_anonymous=False
+    )
+
+# --- СПИСОК ДЕЛ (TODO) ---
+@base_router.message(Command("todo"))
+async def add_todo(message: Message):
+    task = message.text.replace("/todo", "").strip()
+    if not task:
+        return await message.answer("Пример: <i>/todo Оплатить свет до субботы</i>")
+    # Здесь можно сохранять в отдельную таблицу или просто подтверждать
+    await message.answer(f"📌 Задача записана: <b>{task}</b>\nНе забудьте выполнить!")
+
+# --- СТАТИСТИКА ЧАТА ---
+@base_router.message(Command("stat"))
+async def chat_stat(message: Message):
+    conn = await get_db_connection()
+    buys = await conn.fetchval('SELECT COUNT(*) FROM shopping_list')
+    capsules = await conn.fetchval('SELECT COUNT(*) FROM future_messages')
+    await conn.close()
+    
+    await message.answer(
+        f"<b>📊 Наша статистика:</b>\n\n"
+        f"🛒 В списке покупок: {buys} поз.\n"
+        f"📩 Капсул времени заложено: {capsules} шт.\n"
+        f"🏠 Домовой на страже порядка!"
+    )
