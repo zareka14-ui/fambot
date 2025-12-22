@@ -14,10 +14,11 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from config.settings import config
 from app.handlers.base import base_router, init_db, send_motivation_to_chat
 
+# Конфигурация
 TARGET_CHAT_ID = int(os.environ.get("TARGET_CHAT_ID", 0))
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# --- ФОНОВЫЕ ПРОВЕРКИ ---
+# --- ЗАДАЧИ ПЛАНИРОВЩИКА ---
 async def check_birthdays(bot: Bot):
     if TARGET_CHAT_ID == 0: return
     try:
@@ -28,37 +29,26 @@ async def check_birthdays(bot: Bot):
             today.day, today.month
         )
         for r in rows:
-            await bot.send_message(TARGET_CHAT_ID, f"🥳 <b>У НАС ПРАЗДНИК!</b>\n\nСегодня день рождения отмечает: <b>{r['name']}</b> ({r['category']})! 🎉")
+            await bot.send_message(TARGET_CHAT_ID, f"🥳 <b>СЕГОДНЯ ПРАЗДНИК!</b>\n\nС днем рождения, <b>{r['name']}</b> ({r['category']})! 🎉")
         await conn.close()
     except Exception as e:
-        logging.error(f"BD check error: {e}")
-
-async def check_future_capsules(bot: Bot):
-    if TARGET_CHAT_ID == 0: return
-    try:
-        conn = await asyncpg.connect(DATABASE_URL)
-        rows = await conn.fetch('SELECT id, text FROM future_messages WHERE release_date <= CURRENT_DATE')
-        for row in rows:
-            await bot.send_message(TARGET_CHAT_ID, f"🔔 <b>КАПСУЛА ВРЕМЕНИ!</b> 📩\n\n{row['text']}")
-            await conn.execute('DELETE FROM future_messages WHERE id = $1', row['id'])
-        await conn.close()
-    except Exception as e:
-        logging.error(f"Capsule error: {e}")
+        logging.error(f"Error checking birthdays: {e}")
 
 async def morning_tasks(bot: Bot):
     if TARGET_CHAT_ID != 0:
         await send_motivation_to_chat(bot, TARGET_CHAT_ID)
         await check_birthdays(bot)
-        await check_future_capsules(bot)
 
-# --- KEEP ALIVE ---
+# --- FLASK KEEP ALIVE ---
 app = Flask('')
 @app.route('/')
 def home(): return "OK"
-def run_flask():
-    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
 
-# --- MAIN ---
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+
+# --- ЗАПУСК ---
 async def main():
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
     await init_db()
@@ -71,7 +61,10 @@ async def main():
     scheduler.add_job(morning_tasks, "cron", hour=9, minute=0, args=[bot])
     scheduler.start()
 
+    # Важно: сброс вебхука для чистого старта
     await bot.delete_webhook(drop_pending_updates=True)
+    
+    logging.info("Bot is starting polling...")
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
