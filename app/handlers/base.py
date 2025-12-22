@@ -138,3 +138,59 @@ async def init_db():
         CREATE TABLE IF NOT EXISTS birthdays (id SERIAL PRIMARY KEY, name TEXT, birth_date DATE);
     ''')
     await conn.close()
+from PIL import Image, ImageOps, ImageEnhance
+import io
+
+# --- ОБРАБОТКА ФОТО ---
+
+@base_router.message(F.photo)
+async def handle_photo(message: Message):
+    """Ловит отправленное фото и предлагает действия"""
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔘 Ч/Б", callback_data="edit_bw"),
+            InlineKeyboardButton(text="🔄 Инверсия", callback_data="edit_inv")
+        ],
+        [
+            InlineKeyboardButton(text="☀️ Яркость +", callback_data="edit_bright"),
+            InlineKeyboardButton(text="🎨 Контраст", callback_data="edit_cont")
+        ]
+    ])
+    await message.reply("Красивое фото! Хочешь применить фильтр?", reply_markup=kb)
+
+@base_router.callback_query(F.data.startswith("edit_"))
+async def edit_callback(call: types.CallbackQuery, bot: Bot):
+    # 1. Получаем фото, на которое ответил пользователь
+    photo = call.message.reply_to_message.photo[-1]
+    file_info = await bot.get_file(photo.file_id)
+    
+    # 2. Скачиваем в память (BytesIO)
+    file_content = await bot.download_file(file_info.file_path)
+    img = Image.open(file_content)
+    
+    action = call.data.split("_")[1]
+    
+    # 3. Применяем фильтр
+    if action == "bw":
+        img = ImageOps.grayscale(img)
+    elif action == "inv":
+        img = ImageOps.invert(img.convert("RGB"))
+    elif action == "bright":
+        enhancer = ImageEnhance.Brightness(img)
+        img = enhancer.enhance(1.5)
+    elif action == "cont":
+        enhancer = ImageEnhance.Contrast(img)
+        img = enhancer.enhance(1.5)
+
+    # 4. Сохраняем результат обратно в байты
+    output = io.BytesIO()
+    img.save(output, format="JPEG")
+    output.seek(0)
+
+    # 5. Отправляем результат
+    await bot.send_photo(
+        call.message.chat.id, 
+        types.BufferedInputFile(output.read(), filename="edit.jpg"),
+        caption="Готово! ✨"
+    )
+    await call.answer()
