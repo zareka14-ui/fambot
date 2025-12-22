@@ -1,52 +1,54 @@
 import os
-import random  # Исправлено: добавлен импорт
+import random
 import asyncio
-import asyncpg
-from aiogram import Router, types
-from aiogram.filters import Command
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+import logging
+import sys
+from flask import Flask
+from threading import Thread
+from aiogram import Bot, Dispatcher
+from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-base_router = Router()
-DATABASE_URL = os.getenv("DATABASE_URL")
+from config.settings import config
+from app.handlers.base import base_router, init_db
 
-async def get_db_connection():
-    return await asyncpg.connect(DATABASE_URL)
+# --- РАССЫЛКА ---
+async def send_daily_motivation(bot: Bot):
+    chat_id = 117535475  # Ваш ID
+    quotes = ["Семья — это всё. ❤️", "Хорошего дня! 👋", "Не забудьте про /list! ✨"]
+    try:
+        await bot.send_message(chat_id, f"<b>Доброе утро! ☀️</b>\n\n{random.choice(quotes)}")
+    except Exception as e:
+        logging.error(f"Рассылка не удалась: {e}")
 
-async def init_db():
-    conn = await get_db_connection()
-    await conn.execute('''
-        CREATE TABLE IF NOT EXISTS reputation (user_id BIGINT PRIMARY KEY, name TEXT, score INTEGER DEFAULT 0);
-        CREATE TABLE IF NOT EXISTS shopping_list (id SERIAL PRIMARY KEY, item TEXT);
-        CREATE TABLE IF NOT EXISTS quotes (id SERIAL PRIMARY KEY, text TEXT, author TEXT);
-    ''')
-    await conn.close()
+# --- KEEP ALIVE ---
+app = Flask('')
+@app.route('/')
+def home(): return "Бот в сети"
 
-@base_router.message(Command("id"))
-async def get_chat_id(message: Message):
-    await message.answer(f"ID этого чата: <code>{message.chat.id}</code>")
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
 
-@base_router.message(Command("start"))
-async def cmd_start(message: Message):
-    user_name = message.from_user.first_name
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎮 Игры", web_app=WebAppInfo(url="https://prizes.gamee.com/"))],
-        [
-            InlineKeyboardButton(text="📜 Справка", callback_data="help_callback"),
-            InlineKeyboardButton(text="📈 Рейтинг", callback_data="rating_callback")
-        ]
-    ])
-    await message.answer(f"<b>Привет, {user_name}! 👋</b>\nЯ ваш семейный помощник.", reply_markup=keyboard)
+# --- MAIN ---
+async def main():
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+    
+    await init_db() # Инициализация БД
 
-# --- Обработчики кнопок ---
-@base_router.callback_query(lambda c: c.data == "help_callback")
-async def process_help(callback: types.CallbackQuery):
-    await callback.message.answer("Команды: /buy (купить), /list (список), /phrase (цитата)")
-    await callback.answer()
+    bot = Bot(token=config.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    dp = Dispatcher()
+    dp.include_router(base_router)
 
-@base_router.callback_query(lambda c: c.data == "rating_callback")
-async def process_rating(callback: types.CallbackQuery):
-    await show_rating(callback.message)
-    await callback.answer()
+    # ПЛАНИРОВЩИК (Теперь внутри main)
+    scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
+    scheduler.add_job(send_daily_motivation, "cron", hour=9, minute=0, args=[bot])
+    scheduler.start()
 
-# --- Остальные функции (rating, add_reputation, add_to_shopping и т.д.) ---
-# Оставьте их как есть в вашем текущем файле, они работают верно.
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
+
+if __name__ == '__main__':
+    Thread(target=run_flask, daemon=True).start()
+    asyncio.run(main())
