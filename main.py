@@ -13,61 +13,69 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from config.settings import config
 from app.handlers.base import base_router, init_db
 
-# --- РАССЫЛКА ---
+# --- СПИСОК АФОРИЗМОВ ---
+family_quotes = [
+    "Семья — это не главное. Семья — это всё. (Майкл Джей Фокс)",
+    "Счастлив тот, кто счастлив у себя дома. (Лев Толстой)",
+    "Семья — это компас, который ведет нас по жизни.",
+    "Семья — это маленький мир, созданный любовью.",
+    "Самое главное в жизни — это семья.",
+    "Дом — это место, где всегда рады твоему возвращению.",
+    "Семья — это единство души в разных телах.",
+    "Всё начинается с семьи."
+]
+
+# --- ФУНКЦИЯ РАССЫЛКИ С КАРТИНКОЙ ---
 async def send_daily_motivation(bot: Bot):
-    chat_id = 117535475  # Ваш ID
-    quotes = ["Семья — это всё. ❤️", "Хорошего дня! 👋", "Не забудьте про /list! ✨"]
+    chat_id = 117535475  # Ваш ID чата
+    random_quote = random.choice(family_quotes)
+    
+    # Описание для генерации картинки (промпт)
+    prompt = "Уютный загородный дом, теплая семейная атмосфера, утро, солнечные лучи сквозь окно, стиль цифровой живописи, высокое качество."
+
     try:
-        await bot.send_message(chat_id, f"<b>Доброе утро! ☀️</b>\n\n{random.choice(quotes)}")
-        logging.info("Motivation message sent successfully")
+        # Отправляем фото по промпту (генерация) и подписываем афоризмом
+        await bot.send_photo(
+            chat_id=chat_id,
+            photo=prompt, 
+            caption=f"<b>Доброе утро, любимая семья! ☀️</b>\n\n<i>{random_quote}</i>"
+        )
+        logging.info("Daily motivation with image sent successfully")
     except Exception as e:
-        logging.error(f"Рассылка не удалась: {e}")
+        logging.error(f"Failed to send motivation: {e}")
 
-# --- KEEP ALIVE ---
+# --- KEEP ALIVE СЕРВЕР ---
 app = Flask('')
-@app.route('/')
-def home(): 
-    return "Бот в сети"
 
-def run_flask(): # Исправлено название функции
+@app.route('/')
+def home():
+    return "Бот Домовой в сети!"
+
+def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
-# --- MAIN ---
+# --- ОСНОВНОЙ ЗАПУСК ---
 async def main():
-    logging.basicConfig(
-        level=logging.INFO, 
-        format="%(asctime)s - %(levelname)s - %(message)s",
-        stream=sys.stdout
-    )
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout)
     
-    # 1. Инициализация БД
-    try:
-        await init_db() 
-        logging.info("Database initialized")
-    except Exception as e:
-        logging.error(f"DB Error: {e}")
+    # Инициализация БД
+    await init_db()
 
-    # 2. Инициализация бота
     bot = Bot(token=config.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
     dp.include_router(base_router)
 
-    # 3. Настройка планировщика
+    # Настройка планировщика (9:00 по МСК)
     scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
-    scheduler.add_job(send_daily_motivation, "cron", hour=9, minute=0, args=[bot])
+    scheduler.add_job(send_daily_motivation, "cron", hour=9, minute=0, args=[bot], misfire_grace_time=60)
     scheduler.start()
-    logging.info("Scheduler started")
 
-    # 4. Запуск бота
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
-    # Запуск Flask сервера в отдельном потоке
     Thread(target=run_flask, daemon=True).start()
-    
-    # Запуск asyncio цикла
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
