@@ -1,7 +1,6 @@
 import os
 import asyncio
 import logging
-import sys
 from flask import Flask
 from threading import Thread
 from aiogram import Bot, Dispatcher
@@ -18,26 +17,28 @@ async def morning_tasks(bot: Bot):
     if TARGET_CHAT_ID != 0:
         await send_motivation_to_chat(bot, TARGET_CHAT_ID)
 
+# Flask для поддержки активности Render
 app = Flask('')
 @app.route('/')
-def home(): return "OK"
+def home(): return "Бот работает!"
+
 def run_flask():
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
 
 async def main():
-    logging.basicConfig(level=logging.INFO, stream=sys.stdout)
-    await init_db()
+    logging.basicConfig(level=logging.INFO)
+    await init_db() # Создаем таблицы при запуске
     
     bot = Bot(token=config.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
     dp.include_router(base_router)
 
+    # Планировщик на 9 утра
     scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
     scheduler.add_job(morning_tasks, "cron", hour=9, minute=0, args=[bot])
     scheduler.start()
 
     await bot.delete_webhook(drop_pending_updates=True)
-    logging.info("Bot is starting...")
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
