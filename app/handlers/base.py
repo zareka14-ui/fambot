@@ -3,6 +3,7 @@ import random
 import asyncio
 import asyncpg
 import logging
+import urllib.parse
 from datetime import datetime
 from aiogram import Router, types, F, Bot
 from aiogram.filters import Command
@@ -14,92 +15,126 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 async def get_db_connection():
     return await asyncpg.connect(DATABASE_URL)
 
+# --- ГЕНЕРАЦИЯ КАРТИНОК ---
+@base_router.message(Command("gen"))
+async def cmd_generate(message: Message):
+    prompt = message.text.replace("/gen", "").strip()
+    if not prompt:
+        return await message.answer("Напиши описание. Пример: <code>/gen рыжий кот в космосе</code>")
+    
+    waiting_msg = await message.answer("🎨 Рисую... Подождите немного.")
+    
+    # Кодируем запрос для URL
+    encoded_prompt = urllib.parse.quote(prompt)
+    # Используем Pollinations AI (бесплатно и без ключей)
+    image_url = f"https://pollinations.ai/p/{encoded_prompt}?width=1024&height=1024&seed={random.randint(1, 1000)}&model=flux"
+    
+    try:
+        await message.answer_photo(
+            photo=image_url,
+            caption=f"✨ Результат по запросу: <i>{prompt}</i>"
+        )
+        await waiting_msg.delete()
+    except Exception as e:
+        await waiting_msg.edit_text(f"❌ Не удалось создать картинку. Попробуйте другой запрос.")
+
 # --- РУССКАЯ МОТИВАЦИЯ ---
 async def get_russian_quote():
-    # Мы делим цитаты по категориям для разнообразия
-    categories = {
-        "family": [
-            "Семья — это не главное. Семья — это всё. 🏠",
-            "Счастлив тот, кто счастлив у себя дома. ✨",
-            "Семья — это спасательный круг в бурном океане жизни. 🌊",
-            "В семейной жизни самый важный винтик — это любовь. ❤️",
-            "Дом — это место, где тебя всегда ждут. 🗝",
-            "Семья — это маленький мир, созданный любовью. 🌍",
-            "Сила семьи в её единстве и поддержке. 🤝"
-        ],
-        "wisdom": [
-            "Успех — это сумма маленьких усилий, повторяющихся изо дня в день. 💪",
-            "Единственный способ сделать выдающуюся работу — искренне любить то, что делаешь. 🌟",
-            "Препятствия — это те страшные вещи, которые вы видите, когда отводите взгляд от цели. 🎯",
-            "Великие дела начинаются с малых шагов. 👣",
-            "Мудрость — это умение видеть чудо в обыденном. ✨",
-            "Твоя жизнь — результат твоих мыслей. Мысли позитивно! 🧠",
-            "Не ждите идеального момента, берите момент и делайте его идеальным. 🔥"
-        ],
-        "humor": [
-            "Дом — это место, где можно ходить в пижаме и никто тебя не осудит. 🛌",
-            "Семья — это когда один за всех, а за конфеты — каждый за себя! 🍬",
-            "Порядок в доме — это когда всё лежит на своих местах, кроме кота. 🐈",
-            "Счастье — это когда в холодильнике есть что-то вкусненькое. 🍕"
-        ]
-    }
-    
-    # Выбираем случайную категорию, а затем случайную цитату
-    selected_cat = random.choice(list(categories.keys()))
-    return random.choice(categories[selected_cat])
+    quotes = [
+        "Семья — это не главное. Семья — это всё. 🏠",
+        "Счастлив тот, кто счастлив у себя дома. ✨",
+        "Успех — это сумма маленьких усилий, повторяющихся день за днем. 💪",
+        "Дом там, где тебя всегда ждут. 🗝",
+        "Семья — это маленький мир, созданный любовью. 🌍",
+        "Величайшее счастье — быть уверенным, что тебя любят. ❤️"
+    ]
+    return random.choice(quotes)
 
 async def send_motivation_to_chat(bot: Bot, chat_id: int):
     quote = await get_russian_quote()
-    # Берем фото природы/дома
-    photo_url = f"https://picsum.photos/800/600?nature,house&sig={random.randint(1, 1000)}"
+    photo_url = f"https://picsum.photos/800/600?nature,water&sig={random.randint(1, 1000)}"
     try:
-        await bot.send_photo(
-            chat_id, 
-            photo_url, 
-            caption=f"<b>Заряд бодрости на сегодня! ☀️</b>\n\n{quote}",
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        await bot.send_message(chat_id, f"<b>Доброе утро! ☀️</b>\n\n{quote}", parse_mode="HTML")
+        await bot.send_photo(chat_id, photo_url, caption=f"<b>Доброе утро! ☀️</b>\n\n{quote}")
+    except:
+        await bot.send_message(chat_id, f"<b>Доброе утро! ☀️</b>\n\n{quote}")
 
-# --- ОБРАБОТЧИК /START И КНОПОК ---
+# --- СТАРТ И КНОПКИ ---
 @base_router.message(Command("start"))
 async def cmd_start(message: Message):
-    # Создаем кнопки правильно
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✨ Мотивация", callback_data="get_motivation")],
-        [
-            InlineKeyboardButton(text="🏆 Рейтинг", callback_data="rating_data"),
-            InlineKeyboardButton(text="📜 Справка", callback_data="help_data")
-        ]
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎨 Создать шедевр", callback_data="btn_gen")],
+        [InlineKeyboardButton(text="✨ Мотивация", callback_data="btn_moti")],
+        [InlineKeyboardButton(text="🏆 Рейтинг", callback_data="btn_rate")]
     ])
-    
-    await message.answer(
-        f"<b>Привет, {message.from_user.first_name}! 👋</b>\n\nЯ твой Домовой. Помогаю по дому и слежу за уютом.\n"
-        "Нажми на кнопки ниже или используй меню команд.",
-        reply_markup=keyboard
-    )
+    await message.answer(f"Привет, {message.from_user.first_name}! Я твой Домовой.\nИспользуй /gen для картинок или кнопки ниже:", reply_markup=kb)
 
-# --- ОБРАБОТКА НАЖАТИЙ НА КНОПКИ ---
-@base_router.callback_query(F.data == "get_motivation")
-async def cb_motivation(callback: types.CallbackQuery, bot: Bot):
-    await send_motivation_to_chat(bot, callback.message.chat.id)
-    await callback.answer()
+@base_router.callback_query(F.data == "btn_moti")
+async def cb_moti(call: types.CallbackQuery, bot: Bot):
+    await send_motivation_to_chat(bot, call.message.chat.id)
+    await call.answer()
 
-@base_router.callback_query(F.data == "help_data")
-async def cb_help(callback: types.CallbackQuery):
-    await help_command(callback.message)
-    await callback.answer()
+@base_router.callback_query(F.data == "btn_gen")
+async def cb_gen(call: types.CallbackQuery):
+    await call.message.answer("Чтобы создать картинку, напиши: <code>/gen твой запрос</code>")
+    await call.answer()
 
-@base_router.callback_query(F.data == "rating_data")
-async def cb_rating(callback: types.CallbackQuery):
-    await cmd_rating(callback.message)
-    await callback.answer()
+# --- ОСТАЛЬНЫЕ КОМАНДЫ ---
+@base_router.message(Command("who"))
+async def cmd_who(message: Message):
+    conn = await get_db_connection()
+    row = await conn.fetchrow('SELECT name FROM reputation ORDER BY RANDOM() LIMIT 1')
+    await conn.close()
+    name = row['name'] if row else message.from_user.first_name
+    await message.answer(f"🎯 Сегодня ответственный: <b>{name}</b>!")
 
-# --- ВСЕ ОСТАЛЬНЫЕ КОМАНДЫ (motivation, rating, buy и т.д.) ---
-@base_router.message(Command("motivation"))
-async def manual_motivation(message: Message, bot: Bot):
-    await send_motivation_to_chat(bot, message.chat.id)
+@base_router.message(F.text == "+")
+async def add_rep(message: Message):
+    if not message.reply_to_message or message.reply_to_message.from_user.id == message.from_user.id: return
+    conn = await get_db_connection()
+    await conn.execute('INSERT INTO reputation (user_id, name, score) VALUES ($1, $2, 1) ON CONFLICT (user_id) DO UPDATE SET score = reputation.score + 1', 
+                       message.reply_to_message.from_user.id, message.reply_to_message.from_user.first_name)
+    await conn.close()
+    await message.answer(f"➕ Репутация {message.reply_to_message.from_user.first_name} повышена!")
 
-# ... (остальной код команд /who, /rating, /buy остается без изменений) ...
+@base_router.message(Command("buy"))
+async def cmd_buy(message: Message):
+    item = message.text.replace("/buy", "").strip()
+    if item:
+        conn = await get_db_connection()
+        await conn.execute('INSERT INTO shopping_list (item) VALUES ($1)', item)
+        await conn.close()
+        await message.answer(f"✅ Добавлено: {item}")
 
+@base_router.message(Command("list"))
+async def cmd_list(message: Message):
+    conn = await get_db_connection()
+    rows = await conn.fetch('SELECT item FROM shopping_list')
+    await conn.close()
+    if not rows: return await message.answer("Список пуст.")
+    await message.answer("<b>🛒 Список покупок:</b>\n" + "\n".join([f"• {r['item']}" for r in rows]))
+
+@base_router.message(Command("clear"))
+async def cmd_clear(message: Message):
+    conn = await get_db_connection()
+    await conn.execute('DELETE FROM shopping_list')
+    await conn.close()
+    await message.answer("🧹 Список очищен!")
+
+@base_router.message(Command("dbtest"))
+async def db_test(message: Message):
+    try:
+        conn = await get_db_connection()
+        await conn.close()
+        await message.answer("✅ База данных подключена!")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка БД: {e}")
+
+# Инициализация таблиц
+async def init_db():
+    conn = await get_db_connection()
+    await conn.execute('''
+        CREATE TABLE IF NOT EXISTS reputation (user_id BIGINT PRIMARY KEY, name TEXT, score INTEGER DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS shopping_list (id SERIAL PRIMARY KEY, item TEXT);
+        CREATE TABLE IF NOT EXISTS birthdays (id SERIAL PRIMARY KEY, name TEXT, birth_date DATE);
+    ''')
+    await conn.close()
