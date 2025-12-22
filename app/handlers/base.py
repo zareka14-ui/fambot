@@ -49,9 +49,9 @@ async def send_motivation_to_chat(bot, chat_id: int):
 
 @base_router.message(Command("start"))
 async def cmd_start(message: Message):
-    # Исправленная структура кнопок
+    # Используем обычную кнопку-ссылку вместо WebApp, так как она вызывает ошибку
     builder = [
-        [InlineKeyboardButton(text="🎮 Игры", web_app=WebAppInfo(url="https://prizes.gamee.com/"))],
+        [InlineKeyboardButton(text="🎮 Открыть игры", url="https://prizes.gamee.com/")],
         [
             InlineKeyboardButton(text="📜 Справка", callback_data="help_data"),
             InlineKeyboardButton(text="📈 Рейтинг", callback_data="rating_data")
@@ -59,10 +59,16 @@ async def cmd_start(message: Message):
     ]
     keyboard = InlineKeyboardMarkup(inline_keyboard=builder)
     
-    await message.answer(
-        f"<b>Привет, {message.from_user.first_name}! 👋</b>\nЯ твой Домовой. Помогаю по дому и не даю забыть о важном.", 
-        reply_markup=keyboard
-    )
+    try:
+        await message.answer(
+            f"<b>Привет, {message.from_user.first_name}! 👋</b>\nЯ твой Домовой. Помогаю по дому и не даю забыть о важном.", 
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logging.error(f"Start command error: {e}")
+        # Запасной вариант вообще без кнопок, если что-то пойдет не так
+        await message.answer(f"Привет, {message.from_user.first_name}! Я в сети. Напиши /help для списка команд.")
 
 @base_router.message(Command("help"))
 async def help_command(message: Message):
@@ -149,3 +155,4 @@ async def cb_rating(c: types.CallbackQuery):
     res = "<b>🏆 Топ активных:</b>\n" + "\n".join([f"{r['name']}: {r['score']}" for r in rows]) if rows else "Пусто"
     await c.message.answer(res)
     await c.answer()
+
