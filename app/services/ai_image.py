@@ -1,55 +1,60 @@
 import os
 import aiohttp
 import logging
+import urllib.parse
+import random
+import ssl
+
+# Отключаем проверку SSL, если она блокирует соединение
+ssl_context = ssl.create_default_context()
+ssl_context.check_hostname = False
+ssl_context.verify_mode = ssl.CERT_NONE
 
 HF_TOKEN = os.getenv("HUGGINGFACE_TOKEN")
 
-HF_HEADERS = {
-    "Authorization": f"Bearer {HF_TOKEN}",
-    "Content-Type": "application/json"
-}
+async def get_session():
+    # family=2 принудительно заставляет использовать IPv4
+    connector = aiohttp.TCPConnector(family=2, ssl=ssl_context)
+    return aiohttp.ClientSession(connector=connector)
 
-SDXL_MODEL = "stabilityai/stable-diffusion-xl-base-1.0"
-FLUX_MODEL = "black-forest-labs/FLUX.1-dev"
-GFPGAN_MODEL = "TencentARC/GFPGAN"
-ESRGAN_MODEL = "nightmareai/real-esrgan"
+async def hf_generate(prompt: str):
+    if not HF_TOKEN:
+        return None
+    
+    url = "https://api-inference.huggingface.co/models/runwayml/stable-diffusion-v1-5"
+    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+    payload = {"inputs": prompt}
 
-async def hf_generate(prompt: str, model=SDXL_MODEL):
-    url = f"https://api-inference.huggingface.co/models/{model}"
-    payload = {
-        "inputs": prompt,
-        "parameters": {
-            "guidance_scale": 7.5,
-            "num_inference_steps": 30,
-            "negative_prompt": "blurry, low quality, bad anatomy"
-        }
-    }
-
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, headers=HF_HEADERS, json=payload, timeout=120) as r:
-            if r.status == 200:
-                return await r.read()
-            logging.error(f"HF error {r.status}")
+    async with await get_session() as session:
+        try:
+            async with session.post(url, headers=headers, json=payload, timeout=40) as r:
+                if r.status == 200:
+                    return await r.read()
+                return None
+        except Exception as e:
+            logging.error(f"HF Connection Error: {e}")
             return None
 
-async def hf_image_process(image_bytes: bytes, model: str):
-    url = f"https://api-inference.huggingface.co/models/{model}"
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            url,
-            headers=HF_HEADERS,
-            data=image_bytes,
-            timeout=120
-        ) as r:
-            if r.status == 200:
-                return await r.read()
-            logging.error(f"HF process error {r.status}")
+async def pollinations_generate(prompt: str):
+    seed = random.randint(1, 999999)
+    encoded = urllib.parse.quote(prompt)
+    url = f"https://pollinations.ai/p/{encoded}?width=1024&height=1024&seed={seed}&model=flux&nologo=true"
+    
+    async with await get_session() as session:
+        try:
+            async with session.get(url, timeout=40) as r:
+                if r.status == 200:
+                    return await r.read()
+                logging.error(f"Pollinations returned status: {r.status}")
+                return None
+        except Exception as e:
+            logging.error(f"Pollinations Connection Error: {e}")
             return None
 
 async def generate_best(prompt: str):
-    # 1) SDXL
-    img = await hf_generate(prompt, SDXL_MODEL)
-    if img:
-        return img
-    # 2) Flux fallback
-    return await hf_generate(prompt, FLUX_MODEL)
+    # Пытаемся получить картинку из любого источника
+    img = await hf_generate(prompt)
+    if not img:
+        logging.info("Switching to fallback (Pollinations)...")
+        img = await pollinations_generate(prompt)
+    return img
