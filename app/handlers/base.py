@@ -5,8 +5,6 @@ import asyncpg
 import logging
 import urllib.parse
 import aiohttp
-import base64
-import json
 from datetime import datetime
 from aiogram import Router, types, F, Bot
 from aiogram.filters import Command
@@ -14,12 +12,15 @@ from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, B
 
 base_router = Router()
 DATABASE_URL = os.getenv("DATABASE_URL")
-SEGMIND_API_KEY = os.getenv("SEGMIND_API_KEY")
+HF_TOKEN = os.getenv("HF_TOKEN")
+
+# Используем одну из лучших бесплатных моделей на данный момент
+HF_MODEL_URL = "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell"
 
 async def get_db_connection():
     return await asyncpg.connect(DATABASE_URL)
 
-# --- ИНИЦИАЛИЗАЦИЯ БД ---
+# --- ИНИЦИАЛИЗАЦИЯ ТАБЛИЦ ---
 async def init_db():
     conn = await get_db_connection()
     await conn.execute('''
@@ -29,99 +30,78 @@ async def init_db():
     ''')
     await conn.close()
 
-# --- ВЫСОКОКАЧЕСТВЕННАЯ ГЕНЕРАЦИЯ (SEGMIND) ---
+# --- ИИ ГЕНЕРАЦИЯ (Hugging Face) ---
+async def query_hugging_face(prompt: str):
+    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+    payload = {"inputs": prompt}
+    
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(HF_MODEL_URL, headers=headers, json=payload, timeout=40) as resp:
+                if resp.status == 200:
+                    return await resp.read()
+                elif resp.status == 503:
+                    return "loading"
+                else:
+                    logging.error(f"HF Error: {resp.status}")
+                    return None
+        except Exception as e:
+            logging.error(f"HF Request error: {e}")
+            return None
+
 @base_router.message(Command("gen"))
 async def cmd_generate(message: Message):
     prompt = message.text.replace("/gen", "").strip()
     if not prompt:
-        return await message.answer("Напиши описание. Пример: <code>/gen ковбой в открытом космосе, реализм</code>")
+        return await message.answer("Напиши описание. Пример: <code>/gen киберпанк кот</code>")
     
-    if not SEGMIND_API_KEY:
-        return await message.answer("❌ Ошибка: Не настроен API-ключ Segmind.")
+    if not HF_TOKEN:
+        return await message.answer("❌ Ошибка: Не настроен HF_TOKEN в настройках Render.")
 
-    msg = await message.answer("🎨 Рисую шедевр через SDXL... Пожалуйста, подождите.")
+    msg = await message.answer("🎨 Рисую... (это может занять до 20 секунд)")
     
-    url = "https://api.segmind.com/v1/sdxl1.0-txt2img"
-    data = {
-        "prompt": prompt,
-        "negative_prompt": "ugly, blurry, low quality, distorted, watermark",
-        "style": "base",
-        "samples": 1,
-        "scheduler": "dpmpp_2m",
-        "num_inference_steps": 25,
-        "guidance_scale": 7.5,
-        "seed": random.randint(1, 9999999),
-        "img_width": 1024,
-        "img_height": 1024
-    }
+    # Добавляем стилистические добавки для улучшения качества
+    enhanced_prompt = f"{prompt}, high resolution, masterpiece, highly detailed"
+    result = await query_hugging_face(enhanced_prompt)
 
-    headers = {"x-api-key": SEGMIND_API_KEY, "Content-Type": "application/json"}
+    if result == "loading":
+        await msg.edit_text("⏳ Нейросеть просыпается... Повтори команду через 30 секунд.")
+    elif result:
+        await message.answer_photo(
+            photo=BufferedInputFile(result, filename="ai_gen.jpg"),
+            caption=f"✨ Результат по запросу: <i>{prompt}</i>"
+        )
+        await msg.delete()
+    else:
+        await msg.edit_text("❌ Ошибка генерации. Попробуй позже.")
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=data, headers=headers) as resp:
-                if resp.status == 200:
-                    image_data = await resp.read()
-                    await message.answer_photo(
-                        photo=BufferedInputFile(image_data, filename="gen.jpg"),
-                        caption=f"✨ <b>Результат:</b> {prompt}"
-                    )
-                    await msg.delete()
-                else:
-                    await msg.edit_text("❌ Ошибка API или закончились лимиты Segmind.")
-    except Exception as e:
-        logging.error(f"Gen error: {e}")
-        await msg.edit_text("❌ Произошла техническая ошибка.")
+# --- РЕПУТАЦИЯ ---
+@base_router.message(F.text == "+")
+async def add_rep(message: Message):
+    if not message.reply_to_message or message.reply_to_message.from_user.id == message.from_user.id:
+        return
+    
+    conn = await get_db_connection()
+    await conn.execute('''
+        INSERT INTO reputation (user_id, name, score) VALUES ($1, $2, 1)
+        ON CONFLICT (user_id) DO UPDATE SET score = reputation.score + 1
+    ''', message.reply_to_message.from_user.id, message.reply_to_message.from_user.first_name)
+    await conn.close()
+    await message.answer(f"👍 Репутация <b>{message.reply_to_message.from_user.first_name}</b> увеличена!")
 
-# --- УМНОЕ РЕДАКТИРОВАНИЕ ФОТО (SEGMIND) ---
-@base_router.message(F.photo)
-async def handle_ai_edit(message: Message, bot: Bot):
-    if not message.caption:
-        return await message.answer("📸 Чтобы изменить фото, пришли его с <b>описанием</b>!\nНапример: <i>'сделай меня киборгом'</i>")
+@base_router.message(Command("rating"))
+async def cmd_rating(message: Message):
+    conn = await get_db_connection()
+    rows = await conn.fetch('SELECT name, score FROM reputation ORDER BY score DESC')
+    await conn.close()
+    
+    if not rows:
+        return await message.answer("🏆 Рейтинг пока пуст.")
+    
+    res = "<b>🏆 Рейтинг семьи:</b>\n" + "\n".join([f"{r['name']}: {r['score']}" for r in rows])
+    await message.answer(res)
 
-    if not SEGMIND_API_KEY:
-        return await message.answer("❌ API ключ Segmind не настроен.")
-
-    msg = await message.answer("🤖 Перерисовываю фото с сохранением структуры...")
-
-    # Скачиваем фото
-    photo = message.photo[-1]
-    file_info = await bot.get_file(photo.file_id)
-    photo_bytes = await bot.download_file(file_info.file_path)
-    encoded_image = base64.b64encode(photo_bytes.read()).decode('utf-8')
-
-    url = "https://api.segmind.com/v1/sdxl1.0-img2img"
-    data = {
-        "image": encoded_image,
-        "prompt": message.caption.strip(),
-        "negative_prompt": "deformed, ugly, blurry, low quality",
-        "samples": 1,
-        "scheduler": "dpmpp_2m",
-        "num_inference_steps": 30,
-        "guidance_scale": 8.0,
-        "strength": 0.5,  # Баланс между оригиналом и промптом
-        "seed": random.randint(1, 9999999)
-    }
-
-    headers = {"x-api-key": SEGMIND_API_KEY, "Content-Type": "application/json"}
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=data, headers=headers) as resp:
-                if resp.status == 200:
-                    image_data = await resp.read()
-                    await message.answer_photo(
-                        photo=BufferedInputFile(image_data, filename="edit.jpg"),
-                        caption=f"🎨 <b>Обработка готова!</b>\nЗапрос: {message.caption}"
-                    )
-                    await msg.delete()
-                else:
-                    await msg.edit_text("❌ Не удалось обработать. Проверьте лимиты Segmind.")
-    except Exception as e:
-        logging.error(f"Edit error: {e}")
-        await msg.edit_text("❌ Ошибка связи с нейросетью.")
-
-# --- БАЗОВЫЕ КОМАНДЫ (ПОКУПКИ, РЕЙТИНГ, ПРАЗДНИКИ) ---
+# --- СПИСОК ПОКУПОК ---
 @base_router.message(Command("buy"))
 async def cmd_buy(message: Message):
     item = message.text.replace("/buy", "").strip()
@@ -129,14 +109,18 @@ async def cmd_buy(message: Message):
         conn = await get_db_connection()
         await conn.execute('INSERT INTO shopping_list (item) VALUES ($1)', item)
         await conn.close()
-        await message.answer(f"✅ Добавлено в список: {item}")
+        await message.answer(f"🛒 Добавлено в список: {item}")
 
 @base_router.message(Command("list"))
 async def cmd_list(message: Message):
     conn = await get_db_connection()
     rows = await conn.fetch('SELECT item FROM shopping_list')
     await conn.close()
-    res = "<b>🛒 Список покупок:</b>\n" + "\n".join([f"• {r['item']}" for r in rows]) if rows else "Список пуст."
+    
+    if not rows:
+        return await message.answer("🛒 Список покупок пуст.")
+    
+    res = "<b>🛒 Нужно купить:</b>\n" + "\n".join([f"• {r['item']}" for r in rows])
     await message.answer(res)
 
 @base_router.message(Command("clear"))
@@ -144,48 +128,70 @@ async def cmd_clear(message: Message):
     conn = await get_db_connection()
     await conn.execute('DELETE FROM shopping_list')
     await conn.close()
-    await message.answer("🧹 Список очищен!")
+    await message.answer("🧹 Список покупок очищен.")
 
-@base_router.message(F.text == "+")
-async def add_rep(message: Message):
-    if not message.reply_to_message or message.reply_to_message.from_user.id == message.from_user.id: return
-    conn = await get_db_connection()
-    await conn.execute('''
-        INSERT INTO reputation (user_id, name, score) VALUES ($1, $2, 1)
-        ON CONFLICT (user_id) DO UPDATE SET score = reputation.score + 1
-    ''', message.reply_to_message.from_user.id, message.reply_to_message.from_user.first_name)
-    await conn.close()
-    await message.answer(f"➕ Репутация {message.reply_to_message.from_user.first_name} повышена!")
+# --- ПРАЗДНИКИ ---
+@base_router.message(Command("add_bd"))
+async def add_birthday(message: Message):
+    args = message.text.split()
+    if len(args) < 3:
+        return await message.answer("Формат: <code>/add_bd Имя ДД.ММ</code>")
+    try:
+        day, month = map(int, args[2].split('.'))
+        b_date = datetime(2000, month, day)
+        conn = await get_db_connection()
+        await conn.execute('INSERT INTO birthdays (name, birth_date) VALUES ($1, $2)', args[1], b_date)
+        await conn.close()
+        await message.answer(f"🎂 Сохранил: {args[1]} — {args[2]}")
+    except:
+        await message.answer("❌ Ошибка в дате. Используй ДД.ММ")
 
 @base_router.message(Command("all_bd"))
 async def list_birthdays(message: Message):
     conn = await get_db_connection()
     rows = await conn.fetch('SELECT name, birth_date FROM birthdays ORDER BY EXTRACT(MONTH FROM birth_date), EXTRACT(DAY FROM birth_date)')
     await conn.close()
-    if not rows: return await message.answer("📅 Календарь пуст.")
+    
+    if not rows:
+        return await message.answer("📅 Календарь пуст.")
+    
     res = "<b>📅 Дни рождения:</b>\n" + "\n".join([f"• {r['birth_date'].strftime('%d.%m')} — {r['name']}" for r in rows])
     await message.answer(res)
 
-@base_router.message(Command("id"))
-async def cmd_id(message: Message):
-    await message.answer(f"ID этого чата: <code>{message.chat.id}</code>")
+# --- УТИЛИТЫ И ИГРЫ ---
+@base_router.message(Command("who"))
+async def cmd_who(message: Message):
+    conn = await get_db_connection()
+    row = await conn.fetchrow('SELECT name FROM reputation ORDER BY RANDOM() LIMIT 1')
+    await conn.close()
+    name = row['name'] if row else "Никто (сначала наберите репутацию)"
+    await message.answer(f"🎯 Сегодня ответственный за всё: <b>{name}</b>!")
+
+@base_router.message(Command("dinner"))
+async def cmd_dinner(message: Message):
+    await message.answer_poll("🥘 Что приготовим на ужин?", ["Домашняя еда 🥗", "Закажем доставку 🍕", "Суши/Роллы 🍣", "Просто чай с бутербродами ☕️"], is_anonymous=False)
+
+@base_router.message(Command("dice"))
+async def cmd_dice(message: Message):
+    await message.answer_dice("🎲")
 
 @base_router.message(Command("start"))
 async def cmd_start(message: Message):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎨 Создать фото", callback_data="info_ai")],
-        [InlineKeyboardButton(text="🏆 Рейтинг", callback_data="info_rating")]
-    ])
-    await message.answer("🏠 Привет! Я твой обновленный Домовой. Теперь с мощным ИИ Segmind!\nОтправь /gen для рисования или фото с текстом для обработки.", reply_markup=kb)
+    await message.answer("🏠 Привет! Я твой семейный Домовой.\n\n"
+                         "<b>Команды:</b>\n"
+                         "🎨 /gen [текст] — Рисую через ИИ\n"
+                         "🛒 /buy [товар] — В список покупок\n"
+                         "📊 /rating — Кто самый крутой в семье\n"
+                         "🎂 /all_bd — Дни рождения\n"
+                         "🎯 /who — Выбор дежурного\n"
+                         "➕ — Плюсуй в ответ на сообщение для рейтинга")
 
-@base_router.callback_query(F.data == "info_ai")
-async def info_ai(call: types.CallbackQuery):
-    await call.message.answer("Пиши <code>/gen [описание]</code> для новых картинок.\nПрисылай фото с подписью для изменения стиля.")
-    await call.answer()
-
+# --- МОТИВАЦИЯ (Для рассылки) ---
 async def send_motivation_to_chat(bot: Bot, chat_id: int):
-    url = f"https://picsum.photos/800/600?nature&sig={random.randint(1,1000)}"
+    quotes = ["Семья — это самое важное в жизни. ❤️", "Дом там, где тебя всегда ждут. 🏠", "Улыбнись — это всех раздражает! 😊"]
+    quote = random.choice(quotes)
+    url = f"https://picsum.photos/800/600?nature&sig={random.randint(1,999)}"
     try:
-        await bot.send_photo(chat_id, url, caption="<b>Доброе утро!</b>\nПусть этот день будет продуктивным. ✨")
+        await bot.send_photo(chat_id, url, caption=f"<b>Доброе утро!</b>\n\n{quote}")
     except:
-        await bot.send_message(chat_id, "<b>Доброе утро! ✨</b>")
+        await bot.send_message(chat_id, f"<b>Доброе утро!</b>\n\n{quote}")
