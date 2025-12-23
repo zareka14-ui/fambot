@@ -1,139 +1,279 @@
 import os
 import random
-import asyncio
-import asyncpg
 import logging
-import urllib.parse
-import aiohttp
 from datetime import datetime
+
 from aiogram import Router, types, F, Bot
 from aiogram.filters import Command
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
+from aiogram.types import (
+    Message,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    BufferedInputFile
+)
+
+from app.services.db import get_db
+from app.services.ai_image import (
+    generate_best,
+    hf_image_process,
+    GFPGAN_MODEL,
+    ESRGAN_MODEL
+)
 
 base_router = Router()
-DATABASE_URL = os.getenv("DATABASE_URL")
 
-async def get_db_connection():
-    return await asyncpg.connect(DATABASE_URL)
+# ====== НАСТРОЙКИ ======
+GEN_COOLDOWN = {}
+COOLDOWN_SEC = 20
 
-# --- ИНИЦИАЛИЗАЦИЯ ТАБЛИЦ (Необходима для main.py) ---
+# ====== DB INIT ======
 async def init_db():
-    conn = await get_db_connection()
-    try:
-        await conn.execute('''
-            CREATE TABLE IF NOT EXISTS reputation (user_id BIGINT PRIMARY KEY, name TEXT, score INTEGER DEFAULT 0);
-            CREATE TABLE IF NOT EXISTS shopping_list (id SERIAL PRIMARY KEY, item TEXT);
-            CREATE TABLE IF NOT EXISTS birthdays (id SERIAL PRIMARY KEY, name TEXT, birth_date DATE);
-        ''')
-    finally:
-        await conn.close()
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS reputation (
+            user_id BIGINT PRIMARY KEY,
+            name TEXT,
+            score INTEGER DEFAULT 0
+        )
+        """)
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS shopping_list (
+            id SERIAL PRIMARY KEY,
+            item TEXT
+        )
+        """)
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS birthdays (
+            id SERIAL PRIMARY KEY,
+            name TEXT,
+            birth_date DATE
+        )
+        """)
 
-# --- ИИ ГЕНЕРАЦИЯ (Pollinations - Самый стабильный метод) ---
-async def query_ai_image(prompt: str):
-    seed = random.randint(1, 999999)
-    # Кодируем текст для безопасной передачи в URL
-    encoded_prompt = urllib.parse.quote(prompt)
-    # Модель flux — современная и качественная
-    url = f"https://pollinations.ai/p/{encoded_prompt}?width=1024&height=1024&seed={seed}&model=flux&nologo=true"
-    
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(url, timeout=30) as resp:
-                if resp.status == 200:
-                    return await resp.read()
-                else:
-                    logging.error(f"AI Error: {resp.status}")
-                    return None
-        except Exception as e:
-            logging.error(f"AI Request error: {e}")
-            return None
-
+# ====== IMAGE GENERATION ======
 @base_router.message(Command("gen"))
 async def cmd_generate(message: Message):
     prompt = message.text.replace("/gen", "").strip()
     if not prompt:
-        return await message.answer("Напиши описание. Пример: <code>/gen новогодний кот</code>")
+        return await message.answer(
+            "Пример:\n<code>/gen cinematic cyberpunk cat</code>"
+        )
 
-    msg = await message.answer("🎨 Рисую... Это займет около 10 секунд.")
-    
-    # Улучшаем промпт автоматически
-    enhanced_prompt = f"{prompt}, high quality, detailed, masterpiece"
-    result = await query_ai_image(enhanced_prompt)
+    uid = message.from_user.id
+    now = datetime.utcnow().timestamp()
+
+    if uid in GEN_COOLDOWN and now - GEN_COOLDOWN[uid] < COOLDOWN_SEC:
+        return await message.answer("⏳ Подожди 20 секунд")
+
+    GEN_COOLDOWN[uid] = now
+
+    status = await message.answer("🎨 Генерирую изображение…")
+
+    enhanced_prompt = (
+        f"{prompt}, ultra detailed, cinematic lighting, "
+        f"8k, masterpiece, sharp focus"
+    )
+
+    image = await generate_best(enhanced_prompt)
+
+    if not image:
+        return await status.edit_text("❌ Генерация временно недоступна")
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="🔁 Ещё",
+                callback_data=f"regen:{prompt}"
+            ),
+            InlineKeyboardButton(
+                text="✨ Лицо",
+                callback_data="facefix"
+            ),
+            InlineKeyboardButton(
+                text="🔍 Апскейл",
+                callback_data="upscale"
+            )
+        ]
+    ])
+
+    await message.answer_photo(
+        BufferedInputFile(image, "gen.png"),
+        caption=f"✨ <b>Готово</b>\n<i>{prompt}</i>",
+        reply_markup=kb
+    )
+
+    await status.delete()
+
+
+@base_router.callback_query(F.data.startswith("regen:"))
+async def regen(call: types.CallbackQuery):
+    prompt = call.data.split(":", 1)[1]
+    await call.answer()
+    await cmd_generate(
+        Message(
+            message_id=call.message.message_id,
+            from_user=call.from_user,
+            chat=call.message.chat,
+            text=f"/gen {prompt}"
+        )
+    )
+
+# ====== IMAGE PROCESSING ======
+@base_router.callback_query(F.data == "facefix")
+async def facefix(call: types.CallbackQuery):
+    await call.answer()
+
+    if not call.message.reply_to_message or not call.message.reply_to_message.photo:
+        return await call.message.answer("Ответь этой кнопкой на фото")
+
+    photo = call.message.reply_to_message.photo[-1]
+    file = await call.bot.download(photo)
+
+    status = await call.message.answer("✨ Улучшаю лицо…")
+
+    result = await hf_image_process(file.read(), GFPGAN_MODEL)
 
     if result:
-        try:
-            await message.answer_photo(
-                photo=BufferedInputFile(result, filename="gen.jpg"),
-                caption=f"✨ <b>Готово!</b>\nЗапрос: <i>{prompt}</i>"
-            )
-            await msg.delete()
-        except Exception as e:
-            await msg.edit_text(f"❌ Ошибка отправки фото: {e}")
+        await call.message.answer_photo(
+            BufferedInputFile(result, "facefix.png"),
+            caption="✨ Лицо улучшено"
+        )
     else:
-        await msg.edit_text("❌ Сейчас нейросеть недоступна. Попробуй еще раз через минуту.")
+        await call.message.answer("❌ Не удалось обработать фото")
 
-# --- РЕПУТАЦИЯ ---
+    await status.delete()
+
+
+@base_router.callback_query(F.data == "upscale")
+async def upscale(call: types.CallbackQuery):
+    await call.answer()
+
+    if not call.message.reply_to_message or not call.message.reply_to_message.photo:
+        return await call.message.answer("Ответь этой кнопкой на фото")
+
+    photo = call.message.reply_to_message.photo[-1]
+    file = await call.bot.download(photo)
+
+    status = await call.message.answer("🔍 Увеличиваю разрешение…")
+
+    result = await hf_image_process(file.read(), ESRGAN_MODEL)
+
+    if result:
+        await call.message.answer_photo(
+            BufferedInputFile(result, "upscale.png"),
+            caption="🔍 Апскейл завершён"
+        )
+    else:
+        await call.message.answer("❌ Не удалось увеличить изображение")
+
+    await status.delete()
+
+# ====== REPUTATION ======
 @base_router.message(F.text == "+")
 async def add_rep(message: Message):
-    if not message.reply_to_message or message.reply_to_message.from_user.id == message.from_user.id:
+    if not message.reply_to_message:
         return
-    conn = await get_db_connection()
-    await conn.execute('''
-        INSERT INTO reputation (user_id, name, score) VALUES ($1, $2, 1)
-        ON CONFLICT (user_id) DO UPDATE SET score = reputation.score + 1
-    ''', message.reply_to_message.from_user.id, message.reply_to_message.from_user.first_name)
-    await conn.close()
-    await message.answer(f"👍 Репутация <b>{message.reply_to_message.from_user.first_name}</b> +1")
+    if message.reply_to_message.from_user.id == message.from_user.id:
+        return
+
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+        INSERT INTO reputation (user_id, name, score)
+        VALUES ($1, $2, 1)
+        ON CONFLICT (user_id)
+        DO UPDATE SET score = reputation.score + 1
+        """,
+        message.reply_to_message.from_user.id,
+        message.reply_to_message.from_user.first_name
+        )
+
+    await message.answer(
+        f"👍 Репутация <b>{message.reply_to_message.from_user.first_name}</b> +1"
+    )
+
 
 @base_router.message(Command("rating"))
-async def cmd_rating(message: Message):
-    conn = await get_db_connection()
-    rows = await conn.fetch('SELECT name, score FROM reputation ORDER BY score DESC')
-    await conn.close()
-    if not rows: return await message.answer("🏆 Рейтинг семьи пока пуст.")
-    res = "<b>🏆 Рейтинг семьи:</b>\n" + "\n".join([f"{r['name']}: {r['score']}" for r in rows])
-    await message.answer(res)
+async def rating(message: Message):
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT name, score FROM reputation ORDER BY score DESC"
+        )
 
-# --- СПИСОК ПОКУПОК ---
+    if not rows:
+        return await message.answer("🏆 Рейтинг пока пуст")
+
+    text = "<b>🏆 Рейтинг семьи:</b>\n" + "\n".join(
+        f"{r['name']}: {r['score']}" for r in rows
+    )
+
+    await message.answer(text)
+
+# ====== SHOPPING LIST ======
 @base_router.message(Command("buy"))
-async def cmd_buy(message: Message):
+async def buy(message: Message):
     item = message.text.replace("/buy", "").strip()
-    if item:
-        conn = await get_db_connection()
-        await conn.execute('INSERT INTO shopping_list (item) VALUES ($1)', item)
-        await conn.close()
-        await message.answer(f"🛒 Добавлено в список: {item}")
+    if not item:
+        return
+
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO shopping_list (item) VALUES ($1)",
+            item
+        )
+
+    await message.answer(f"🛒 Добавлено: {item}")
+
 
 @base_router.message(Command("list"))
-async def cmd_list(message: Message):
-    conn = await get_db_connection()
-    rows = await conn.fetch('SELECT item FROM shopping_list')
-    await conn.close()
-    if not rows: return await message.answer("🛒 Список покупок пуст.")
-    res = "<b>🛒 Нужно купить:</b>\n" + "\n".join([f"• {r['item']}" for r in rows])
-    await message.answer(res)
+async def list_items(message: Message):
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT item FROM shopping_list")
+
+    if not rows:
+        return await message.answer("🛒 Список пуст")
+
+    text = "<b>🛒 Нужно купить:</b>\n" + "\n".join(
+        f"• {r['item']}" for r in rows
+    )
+
+    await message.answer(text)
+
 
 @base_router.message(Command("clear"))
-async def cmd_clear(message: Message):
-    conn = await get_db_connection()
-    await conn.execute('DELETE FROM shopping_list')
-    await conn.close()
-    await message.answer("🧹 Список покупок очищен.")
+async def clear_list(message: Message):
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM shopping_list")
 
-# --- БАЗОВЫЕ КОМАНДЫ ---
+    await message.answer("🧹 Список очищен")
+
+# ====== START ======
 @base_router.message(Command("start"))
-async def cmd_start(message: Message):
-    await message.answer("🏠 <b>Домовой на связи!</b>\n\n"
-                         "🎨 /gen — нарисовать картинку\n"
-                         "🛒 /buy — добавить в покупки\n"
-                         "📊 /rating — рейтинг семьи\n"
-                         "➕ — ответь '+' на сообщение, чтобы поднять репутацию")
+async def start(message: Message):
+    await message.answer(
+        "🏠 <b>Домовой на связи!</b>\n\n"
+        "🎨 /gen — генерация изображения\n"
+        "🛒 /buy — добавить покупку\n"
+        "📊 /rating — рейтинг семьи\n"
+        "➕ '+' — поднять репутацию"
+    )
 
-# --- МОТИВАЦИЯ (Необходима для main.py) ---
+# ====== MORNING ======
 async def send_motivation_to_chat(bot: Bot, chat_id: int):
-    # Берем случайную красивую картинку природы
-    url = f"https://picsum.photos/800/600?nature&sig={random.randint(1,999)}"
+    url = f"https://picsum.photos/800/600?sig={random.randint(1,999)}"
     try:
-        await bot.send_photo(chat_id, url, caption="<b>Доброе утро, любимая семья! ✨</b>\nПусть день будет чудесным.")
-    except:
-        await bot.send_message(chat_id, "<b>Доброе утро! ✨</b>")
+        await bot.send_photo(
+            chat_id,
+            url,
+            caption="☀️ <b>Доброе утро, семья!</b>\nПусть день будет отличным ✨"
+        )
+    except Exception:
+        await bot.send_message(
+            chat_id,
+            "☀️ <b>Доброе утро!</b>"
+        )
