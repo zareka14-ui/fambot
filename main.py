@@ -13,12 +13,10 @@ from config.settings import config
 from app.handlers.base import base_router, init_db, send_motivation_to_chat
 from app.services.db import init_pool
 
-
 # ====== НАСТРОЙКИ ======
 TARGET_CHAT_ID = int(os.environ.get("TARGET_CHAT_ID", 0))
 PORT = int(os.environ.get("PORT", 8080))
 
-# ====== MORNING TASK ======
 async def morning_tasks(bot: Bot):
     if TARGET_CHAT_ID:
         await send_motivation_to_chat(bot, TARGET_CHAT_ID)
@@ -46,10 +44,8 @@ async def main():
     await init_pool()
     await init_db()
 
-    # 🔹 Проверка AI сервисов
-    init_ai_services()
-
     # 🔹 Telegram
+    # В новых версиях aiogram настройки передаются через DefaultBotProperties
     bot = Bot(
         token=config.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML)
@@ -68,8 +64,7 @@ async def main():
     logging.info("🤖 Бот запущен и слушает Telegram")
     await dp.start_polling(bot)
 
-# ====== ENTRY POINT ======
 if __name__ == "__main__":
+    # Запуск Flask в отдельном потоке для Render Health Check
     Thread(target=run_flask, daemon=True).start()
     asyncio.run(main())
-
