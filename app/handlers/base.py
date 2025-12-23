@@ -12,15 +12,11 @@ from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, B
 
 base_router = Router()
 DATABASE_URL = os.getenv("DATABASE_URL")
-HF_TOKEN = os.getenv("HF_TOKEN")
-
-# Самая стабильная и доступная модель для бесплатного API
-HF_MODEL_URL = "https://api-inference.huggingface.co/models/runwayml/stable-diffusion-v1-5"
 
 async def get_db_connection():
     return await asyncpg.connect(DATABASE_URL)
 
-# --- ИНИЦИАЛИЗАЦИЯ ТАБЛИЦ (ВАЖНО ДЛЯ main.py) ---
+# --- ИНИЦИАЛИЗАЦИЯ ТАБЛИЦ (Необходима для main.py) ---
 async def init_db():
     conn = await get_db_connection()
     try:
@@ -32,53 +28,49 @@ async def init_db():
     finally:
         await conn.close()
 
-# --- ИИ ГЕНЕРАЦИЯ (Hugging Face) ---
-async def query_hugging_face(prompt: str):
-    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-    payload = {"inputs": prompt}
+# --- ИИ ГЕНЕРАЦИЯ (Pollinations - Самый стабильный метод) ---
+async def query_ai_image(prompt: str):
+    seed = random.randint(1, 999999)
+    # Кодируем текст для безопасной передачи в URL
+    encoded_prompt = urllib.parse.quote(prompt)
+    # Модель flux — современная и качественная
+    url = f"https://pollinations.ai/p/{encoded_prompt}?width=1024&height=1024&seed={seed}&model=flux&nologo=true"
     
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.post(HF_MODEL_URL, headers=headers, json=payload, timeout=60) as resp:
+            async with session.get(url, timeout=30) as resp:
                 if resp.status == 200:
                     return await resp.read()
-                elif resp.status == 503:
-                    return "loading"
                 else:
-                    return f"error_{resp.status}"
+                    logging.error(f"AI Error: {resp.status}")
+                    return None
         except Exception as e:
-            logging.error(f"HF Request error: {e}")
-            return f"exception_{str(e)[:20]}"
+            logging.error(f"AI Request error: {e}")
+            return None
 
 @base_router.message(Command("gen"))
 async def cmd_generate(message: Message):
     prompt = message.text.replace("/gen", "").strip()
     if not prompt:
-        return await message.answer("Напиши описание. Пример: <code>/gen кот в космосе</code>")
-    
-    if not HF_TOKEN:
-        return await message.answer("❌ Ошибка: В Render не прописан HF_TOKEN")
+        return await message.answer("Напиши описание. Пример: <code>/gen новогодний кот</code>")
 
-    msg = await message.answer("🎨 Рисую через Hugging Face...")
+    msg = await message.answer("🎨 Рисую... Это займет около 10 секунд.")
     
-    enhanced_prompt = f"{prompt}, highly detailed, masterpiece, 8k"
-    result = await query_hugging_face(enhanced_prompt)
+    # Улучшаем промпт автоматически
+    enhanced_prompt = f"{prompt}, high quality, detailed, masterpiece"
+    result = await query_ai_image(enhanced_prompt)
 
-    if result == "loading":
-        await msg.edit_text("⏳ Модель просыпается на сервере. Повтори через 30 секунд!")
-    elif isinstance(result, str) and result.startswith("error_"):
-        await msg.edit_text(f"❌ Сервер Hugging Face ответил ошибкой: {result.split('_')[1]}")
-    elif result:
+    if result:
         try:
             await message.answer_photo(
                 photo=BufferedInputFile(result, filename="gen.jpg"),
-                caption=f"✨ <b>Результат:</b> {prompt}"
+                caption=f"✨ <b>Готово!</b>\nЗапрос: <i>{prompt}</i>"
             )
             await msg.delete()
         except Exception as e:
             await msg.edit_text(f"❌ Ошибка отправки фото: {e}")
     else:
-        await msg.edit_text("❌ Неизвестная ошибка генерации.")
+        await msg.edit_text("❌ Сейчас нейросеть недоступна. Попробуй еще раз через минуту.")
 
 # --- РЕПУТАЦИЯ ---
 @base_router.message(F.text == "+")
@@ -98,7 +90,7 @@ async def cmd_rating(message: Message):
     conn = await get_db_connection()
     rows = await conn.fetch('SELECT name, score FROM reputation ORDER BY score DESC')
     await conn.close()
-    if not rows: return await message.answer("🏆 Рейтинг пуст.")
+    if not rows: return await message.answer("🏆 Рейтинг семьи пока пуст.")
     res = "<b>🏆 Рейтинг семьи:</b>\n" + "\n".join([f"{r['name']}: {r['score']}" for r in rows])
     await message.answer(res)
 
@@ -110,14 +102,14 @@ async def cmd_buy(message: Message):
         conn = await get_db_connection()
         await conn.execute('INSERT INTO shopping_list (item) VALUES ($1)', item)
         await conn.close()
-        await message.answer(f"🛒 Добавлено: {item}")
+        await message.answer(f"🛒 Добавлено в список: {item}")
 
 @base_router.message(Command("list"))
 async def cmd_list(message: Message):
     conn = await get_db_connection()
     rows = await conn.fetch('SELECT item FROM shopping_list')
     await conn.close()
-    if not rows: return await message.answer("🛒 Список пуст.")
+    if not rows: return await message.answer("🛒 Список покупок пуст.")
     res = "<b>🛒 Нужно купить:</b>\n" + "\n".join([f"• {r['item']}" for r in rows])
     await message.answer(res)
 
@@ -126,17 +118,22 @@ async def cmd_clear(message: Message):
     conn = await get_db_connection()
     await conn.execute('DELETE FROM shopping_list')
     await conn.close()
-    await message.answer("🧹 Список очищен.")
+    await message.answer("🧹 Список покупок очищен.")
 
 # --- БАЗОВЫЕ КОМАНДЫ ---
 @base_router.message(Command("start"))
 async def cmd_start(message: Message):
-    await message.answer("🏠 Домовой запущен!\n\n/gen — Рисовать\n/buy — Покупки\n/rating — Рейтинг")
+    await message.answer("🏠 <b>Домовой на связи!</b>\n\n"
+                         "🎨 /gen — нарисовать картинку\n"
+                         "🛒 /buy — добавить в покупки\n"
+                         "📊 /rating — рейтинг семьи\n"
+                         "➕ — ответь '+' на сообщение, чтобы поднять репутацию")
 
-# --- МОТИВАЦИЯ (ВАЖНО ДЛЯ main.py) ---
+# --- МОТИВАЦИЯ (Необходима для main.py) ---
 async def send_motivation_to_chat(bot: Bot, chat_id: int):
+    # Берем случайную красивую картинку природы
     url = f"https://picsum.photos/800/600?nature&sig={random.randint(1,999)}"
     try:
-        await bot.send_photo(chat_id, url, caption="<b>Доброе утро! ✨</b>")
+        await bot.send_photo(chat_id, url, caption="<b>Доброе утро, любимая семья! ✨</b>\nПусть день будет чудесным.")
     except:
         await bot.send_message(chat_id, "<b>Доброе утро! ✨</b>")
