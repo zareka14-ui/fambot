@@ -12,7 +12,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from config.settings import config
 from app.handlers.base import base_router, init_db, send_motivation_to_chat
 from app.services.db import init_pool
-from app.services.ai_image import init_ai_services
+
 
 # ====== НАСТРОЙКИ ======
 TARGET_CHAT_ID = int(os.environ.get("TARGET_CHAT_ID", 0))
@@ -72,3 +72,4 @@ async def main():
 if __name__ == "__main__":
     Thread(target=run_flask, daemon=True).start()
     asyncio.run(main())
+
