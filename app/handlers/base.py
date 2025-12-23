@@ -14,8 +14,8 @@ base_router = Router()
 DATABASE_URL = os.getenv("DATABASE_URL")
 HF_TOKEN = os.getenv("HF_TOKEN")
 
-# Используем быструю и стабильную модель SDXL-Lightning
-HF_MODEL_URL = "https://api-inference.huggingface.co/models/ByteDance/SDXL-Lightning"
+# Самая стабильная классическая модель (всегда онлайн)
+HF_MODEL_URL = "https://api-inference.huggingface.co/models/runwayml/stable-diffusion-v1-5"
 
 async def get_db_connection():
     return await asyncpg.connect(DATABASE_URL)
@@ -55,32 +55,37 @@ async def query_hugging_face(prompt: str):
 async def cmd_generate(message: Message):
     prompt = message.text.replace("/gen", "").strip()
     if not prompt:
-        return await message.answer("Напиши описание. Пример: <code>/gen новогодний кот</code>")
+        return await message.answer("Напиши описание. Пример: <code>/gen новогодний лес</code>")
     
     if not HF_TOKEN:
         return await message.answer("❌ Ошибка: В настройках Render не добавлен HF_TOKEN")
 
-    msg = await message.answer("🎨 Рисую через SDXL-Lightning...")
+    msg = await message.answer("🎨 Рисую... Улучшаю детализацию...")
     
-    # Добавки для качества
-    enhanced_prompt = f"{prompt}, high quality, detailed, masterpiece"
+    # --- УЛУЧШАЙЗЕР ПРОМПТА ---
+    # Мы добавляем ключевые слова, которые заставляют старую модель рисовать лучше
+    style_boost = "highly detailed, masterpiece, 8k resolution, cinematic lighting, sharp focus, professional photography"
+    negative_prompt = "blurry, distorted, low quality, bad anatomy, grainy"
+    
+    enhanced_prompt = f"{prompt}, {style_boost}"
+    
     result = await query_hugging_face(enhanced_prompt)
 
     if result == "loading":
-        await msg.edit_text("⏳ Нейросеть просыпается на серверах Hugging Face... Повтори через 30-60 секунд.")
+        await msg.edit_text("⏳ Модель просыпается на сервере (занимает 20-30 сек). Повтори команду чуть позже!")
     elif result == "auth_error":
-        await msg.edit_text("❌ Ошибка авторизации! Проверь правильность HF_TOKEN в Render.")
+        await msg.edit_text("❌ Ошибка ключа! Проверь HF_TOKEN в Render.")
     elif result:
         try:
             await message.answer_photo(
                 photo=BufferedInputFile(result, filename="ai_gen.jpg"),
-                caption=f"✨ Результат: <i>{prompt}</i>"
+                caption=f"✨ <b>Результат:</b> {prompt}"
             )
             await msg.delete()
         except Exception as e:
-            await msg.edit_text(f"❌ Ошибка отправки фото: {e}")
+            await msg.edit_text(f"❌ Ошибка отправки: {e}")
     else:
-        await msg.edit_text("❌ Сервер Hugging Face временно недоступен или перегружен.")
+        await msg.edit_text("❌ Ошибка API (410 или 500). Попробуй другую модель или подожди.")
 
 # --- РЕПУТАЦИЯ ---
 @base_router.message(F.text == "+")
@@ -100,7 +105,7 @@ async def cmd_rating(message: Message):
     conn = await get_db_connection()
     rows = await conn.fetch('SELECT name, score FROM reputation ORDER BY score DESC')
     await conn.close()
-    if not rows: return await message.answer("🏆 Рейтинг пока пуст.")
+    if not rows: return await message.answer("🏆 Рейтинг пуст.")
     res = "<b>🏆 Рейтинг семьи:</b>\n" + "\n".join([f"{r['name']}: {r['score']}" for r in rows])
     await message.answer(res)
 
@@ -130,20 +135,10 @@ async def cmd_clear(message: Message):
     await conn.close()
     await message.answer("🧹 Список очищен.")
 
-# --- ПРАЗДНИКИ ---
-@base_router.message(Command("all_bd"))
-async def list_birthdays(message: Message):
-    conn = await get_db_connection()
-    rows = await conn.fetch('SELECT name, birth_date FROM birthdays ORDER BY EXTRACT(MONTH FROM birth_date), EXTRACT(DAY FROM birth_date)')
-    await conn.close()
-    if not rows: return await message.answer("📅 Календарь пуст.")
-    res = "<b>📅 Дни рождения:</b>\n" + "\n".join([f"• {r['birth_date'].strftime('%d.%m')} — {r['name']}" for r in rows])
-    await message.answer(res)
-
 # --- БАЗОВЫЕ КОМАНДЫ ---
 @base_router.message(Command("start"))
 async def cmd_start(message: Message):
-    await message.answer("🏠 Домовой на связи!\n\n/gen — Рисовать\n/buy — Покупки\n/rating — Рейтинг\n/all_bd — Праздники")
+    await message.answer("🏠 Привет! Я твой обновленный Домовой.\n\n/gen — Рисовать шедевры\n/buy — Список покупок\n/rating — Кто главный")
 
 async def send_motivation_to_chat(bot: Bot, chat_id: int):
     url = f"https://picsum.photos/800/600?nature&sig={random.randint(1,999)}"
