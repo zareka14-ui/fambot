@@ -130,3 +130,35 @@ async def send_motivation_to_chat(bot: Bot, chat_id: int):
     try:
         await bot.send_message(chat_id, "☀️ <b>Доброе утро, семья!</b>")
     except: pass
+@base_router.message(Command("style"))
+async def cmd_style(message: Message):
+    # Проверка на наличие текста (промпта) и фото
+    prompt = message.text.replace("/style", "").strip()
+    if not prompt:
+        return await message.answer("Напиши стиль! Пример: ответь на фото командой <code>/style в стиле киберпанк</code>")
+
+    if not message.reply_to_message or not message.reply_to_message.photo:
+        return await message.answer("Ответь этой командой на фотографию!")
+
+    status = await message.answer("🎨 Перерисовываю фото... подожди немного.")
+    
+    try:
+        # Скачиваем фото
+        file = await message.bot.download(message.reply_to_message.photo[-1])
+        img_bytes = file.read()
+        
+        # Вызываем нашу новую функцию
+        result = await hf_img2img(img_bytes, prompt)
+        
+        if result:
+            await message.answer_photo(
+                BufferedInputFile(result, filename="styled.png"),
+                caption=f"✨ Новый стиль: {prompt}"
+            )
+        else:
+            await message.answer("❌ Не удалось стилизовать. Попробуй другой промпт или подожди минуту.")
+    except Exception as e:
+        logging.error(f"Style error: {e}")
+        await message.answer("❌ Произошла ошибка.")
+    finally:
+        await status.delete()
