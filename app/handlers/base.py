@@ -10,7 +10,8 @@ from aiogram.types import (
     Message,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
-    BufferedInputFile
+    BufferedInputFile,
+    CallbackQuery
 )
 
 from app.services.db import get_db
@@ -18,37 +19,57 @@ from app.services.ai_image import (
     generate_best,
     hf_image_process,
     hf_img2img,
-    hf_remove_bg,  # <-- Добавлено
+    hf_remove_bg,
     GFPGAN_MODEL,
     ESRGAN_MODEL
 )
 
 base_router = Router()
 
+# Кэш для кулдауна генерации
 GEN_COOLDOWN = {}
 COOLDOWN_SEC = 20
 
-# ====== IMAGE GENERATION ======
+# ====== ИНИЦИАЛИЗАЦИЯ БД ======
+async def init_db():
+    """Создает необходимые таблицы при запуске бота"""
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS reputation (
+            user_id BIGINT PRIMARY KEY,
+            name TEXT,
+            score INTEGER DEFAULT 0
+        )
+        """)
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS shopping_list (
+            id SERIAL PRIMARY KEY,
+            item TEXT
+        )
+        """)
+    logging.info("✅ База данных инициализирована")
+
+# ====== ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ (/gen) ======
 @base_router.message(Command("gen"))
 async def cmd_generate(message: Message):
     prompt = message.text.replace("/gen", "").strip()
     if not prompt:
-        return await message.answer("Пример: <code>/gen cinematic cat</code>")
+        return await message.answer("📝 Введи описание. Пример: <code>/gen cyberpunk city</code>")
 
     uid = message.from_user.id
     now = datetime.now(timezone.utc).timestamp()
 
     if uid in GEN_COOLDOWN and now - GEN_COOLDOWN[uid] < COOLDOWN_SEC:
-        return await message.answer("⏳ Подожди 20 секунд")
+        return await message.answer(f"⏳ Подожди {int(COOLDOWN_SEC - (now - GEN_COOLDOWN[uid]))} сек.")
 
     GEN_COOLDOWN[uid] = now
-    status = await message.answer("🎨 Генерирую изображение…")
+    status = await message.answer("🎨 Мастерю шедевр...")
 
-    enhanced_prompt = f"{prompt}, ultra detailed, masterpiece, sharp focus"
-    image = await generate_best(enhanced_prompt)
+    image = await generate_best(f"{prompt}, ultra detailed, masterpiece")
 
     if not image:
-        return await status.edit_text("❌ Генерация временно недоступна")
+        return await status.edit_text("❌ Сервис генерации временно недоступен.")
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -59,52 +80,50 @@ async def cmd_generate(message: Message):
 
     await message.answer_photo(
         BufferedInputFile(image, filename="gen.png"),
-        caption=f"✨ <b>Готово</b>\n<i>{prompt}</i>",
+        caption=f"✨ <b>Готово!</b>\nЗапрос: <i>{prompt}</i>",
         reply_markup=kb
     )
     await status.delete()
 
-# ====== STYLE / IMG2IMG ======
+# ====== СТИЛИЗАЦИЯ (/style) ======
 @base_router.message(Command("style"))
 async def cmd_style(message: Message):
     prompt = message.text.replace("/style", "").strip()
     if not prompt:
-        return await message.answer("Напиши стиль! Пример: ответь на фото командой <code>/style в стиле аниме</code>")
+        return await message.answer("🎨 Напиши стиль! Пример: (в ответ на фото) <code>/style аниме</code>")
 
     if not message.reply_to_message or not message.reply_to_message.photo:
-        return await message.answer("Ответь этой командой на фотографию!")
+        return await message.answer("⚠️ Ответь этой командой на фотографию!")
 
-    status = await message.answer("🎨 Перерисовываю фото...")
+    status = await message.answer("⚡ Перерисовываю...")
     
     try:
-        # Скачиваем фото в объект BytesIO
         photo = message.reply_to_message.photo[-1]
         file_dest = io.BytesIO()
         await message.bot.download(photo, destination=file_dest)
-        img_bytes = file_dest.getvalue()
         
-        result = await hf_img2img(img_bytes, prompt)
+        result = await hf_img2img(file_dest.getvalue(), prompt)
         
         if result:
             await message.answer_photo(
                 BufferedInputFile(result, filename="styled.png"),
-                caption=f"✨ Новый стиль: {prompt}"
+                caption=f"🎨 <b>Стиль:</b> {prompt}"
             )
         else:
-            await message.answer("❌ Не удалось стилизовать. Попробуй SD 1.5 позже.")
+            await message.answer("❌ Ошибка стилизации. Попробуй позже.")
     except Exception as e:
         logging.error(f"Style error: {e}")
-        await message.answer("❌ Ошибка при обработке.")
+        await message.answer("❌ Произошла ошибка при обработке.")
     finally:
         await status.delete()
 
-# ====== REMOVE BACKGROUND ======
+# ====== УДАЛЕНИЕ ФОНА (/nobg) ======
 @base_router.message(Command("nobg"))
 async def cmd_remove_bg(message: Message):
     if not message.reply_to_message or not message.reply_to_message.photo:
-        return await message.answer("Ответь этой командой на фото!")
+        return await message.answer("✂️ Ответь этой командой на фото!")
 
-    status = await message.answer("✂️ Удаляю фон...")
+    status = await message.answer("✂️ Вырезаю объект...")
     try:
         photo = message.reply_to_message.photo[-1]
         file_dest = io.BytesIO()
@@ -113,26 +132,25 @@ async def cmd_remove_bg(message: Message):
         result = await hf_remove_bg(file_dest.getvalue())
         
         if result:
-            # Отправляем документом, чтобы сохранить прозрачность PNG
             await message.answer_document(
                 BufferedInputFile(result, filename="no_bg.png"),
-                caption="✨ Фон удален"
+                caption="✨ Фон успешно удален!"
             )
         else:
-            await message.answer("❌ Ошибка удаления фона.")
+            await message.answer("❌ Не удалось убрать фон.")
     except Exception as e:
         logging.error(f"NoBG error: {e}")
-        await message.answer("❌ Произошла ошибка.")
+        await message.answer("❌ Ошибка при удалении фона.")
     finally:
         await status.delete()
 
-# ====== CALLBACKS ======
+# ====== CALLBACKS (УЛУЧШЕНИЕ) ======
 @base_router.callback_query(F.data == "facefix")
-async def facefix(call: types.CallbackQuery):
+async def facefix(call: CallbackQuery):
     await call.answer()
     if not call.message.photo: return
     
-    status = await call.message.answer("✨ Улучшаю лицо...")
+    status = await call.message.answer("✨ Исправляю лицо...")
     file_dest = io.BytesIO()
     await call.bot.download(call.message.photo[-1], destination=file_dest)
     
@@ -140,7 +158,59 @@ async def facefix(call: types.CallbackQuery):
     if result:
         await call.message.answer_photo(BufferedInputFile(result, filename="fixed.png"), caption="✨ Лицо улучшено")
     else:
-        await call.message.answer("❌ Ошибка HF.")
+        await call.message.answer("❌ Ошибка обработки лица.")
     await status.delete()
 
-# ... (остальные команды типа + и start оставляем без изменений)
+@base_router.callback_query(F.data == "upscale")
+async def upscale(call: CallbackQuery):
+    await call.answer()
+    if not call.message.photo: return
+    
+    status = await call.message.answer("🔍 Увеличиваю качество...")
+    file_dest = io.BytesIO()
+    await call.bot.download(call.message.photo[-1], destination=file_dest)
+    
+    result = await hf_image_process(file_dest.getvalue(), ESRGAN_MODEL)
+    if result:
+        await call.message.answer_photo(BufferedInputFile(result, filename="big.png"), caption="🔍 Качество улучшено")
+    else:
+        await call.message.answer("❌ Ошибка апскейла.")
+    await status.delete()
+
+# ====== РЕПУТАЦИЯ И СИСТЕМА ======
+@base_router.message(F.text == "+")
+async def add_rep(message: Message):
+    if not message.reply_to_message or message.reply_to_message.from_user.id == message.from_user.id:
+        return
+    
+    pool = await get_db()
+    target_user = message.reply_to_message.from_user
+    
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO reputation (user_id, name, score) 
+            VALUES ($1, $2, 1) 
+            ON CONFLICT (user_id) 
+            DO UPDATE SET score = reputation.score + 1
+        """, target_user.id, target_user.first_name)
+    
+    await message.answer(f"👍 Репутация <b>{target_user.first_name}</b> увеличена!")
+
+@base_router.message(Command("start"))
+async def start(message: Message):
+    await message.answer(
+        "🏠 <b>Домовой на связи!</b>\n\n"
+        "🎨 <b>Рисование:</b>\n"
+        "• /gen [текст] — создать картинку\n"
+        "• /style [текст] — (ответ на фото) изменить стиль\n"
+        "• /nobg — (ответ на фото) удалить фон\n\n"
+        "🏆 <b>Другое:</b>\n"
+        "• Отправь '+' в ответ на сообщение — поднять репутацию"
+    )
+
+async def send_motivation_to_chat(bot: Bot, chat_id: int):
+    """Функция для планировщика задач"""
+    try:
+        await bot.send_message(chat_id, "☀️ <b>Доброе утро, семья!</b>\nПусть день будет продуктивным!")
+    except Exception as e:
+        logging.error(f"Motivation error: {e}")
