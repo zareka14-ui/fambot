@@ -94,3 +94,32 @@ async def hf_image_process(image_bytes: bytes, model: str):
                 if r.status == 200: return await r.read()
                 return None
         except: return None
+# Добавляем новую модель
+IMG2IMG_MODEL = "black-forest-labs/FLUX.1-schnell"
+
+async def hf_img2img(image_bytes: bytes, prompt: str):
+    """
+    Перерисовывает существующее изображение по текстовому описанию.
+    """
+    if not HF_TOKEN: return None
+    url = f"https://api-inference.huggingface.co/models/{IMG2IMG_MODEL}"
+    headers = {"Authorization": f"Bearer {HF_TOKEN}", "x-wait-for-model": "true"}
+    
+    # Для некоторых моделей Img2Img на HF нужно отправлять multipart данные
+    # Но FLUX часто принимает JSON с base64 или просто байты
+    payload = {
+        "inputs": prompt,
+        "image": image_bytes, # Некоторые эндпоинты требуют base64, проверь документацию конкретной модели
+        "parameters": {"strength": 0.5} # Насколько сильно менять фото (0.1 - слабо, 0.9 - полностью)
+    }
+
+    async with await get_session() as session:
+        try:
+            async with session.post(url, headers=headers, json=payload, timeout=90) as r:
+                if r.status == 200:
+                    return await r.read()
+                logging.error(f"Img2Img Error: {r.status}")
+                return None
+        except Exception as e:
+            logging.error(f"Img2Img Exception: {e}")
+            return None
