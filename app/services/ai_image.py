@@ -52,62 +52,72 @@ async def generate_best(prompt: str):
         logging.warning(f"⚠️ FLUX busy, using Pollinations: {e}")
         return await pollinations_generate(prompt)
 
+# ====== STYLE (IMAGE TO IMAGE) ======
 async def hf_img2img(image_bytes: bytes, prompt: str):
-    """Стилизация (Img2Img) через Router"""
     if not HF_TOKEN: return None
-    url = "https://router.huggingface.co/hf-inference/v1/image-to-image"
+    # Возвращаемся к классическому Inference API
+    url = f"https://api-inference.huggingface.co/models/{IMG2IMG_MODEL}"
     
-    data = aiohttp.FormData()
-    data.add_field('image', image_bytes, filename='input.jpg', content_type='image/jpeg')
-    data.add_field('prompt', prompt)
-    data.add_field('model', IMG2IMG_MODEL)
+    headers = {
+        "Authorization": f"Bearer {HF_TOKEN}",
+        "Content-Type": "image/jpeg"
+    }
+    
+    # Для бесплатного API промпт передается в заголовке или параметрах URL
+    params = {"inputs": prompt}
 
     async with await get_session() as session:
         try:
-            async with session.post(url, headers={"Authorization": f"Bearer {HF_TOKEN}"}, data=data) as r:
-                if r.status == 200: return await r.read()
-                logging.error(f"❌ Style Error: {r.status}")
+            async with session.post(url, headers=headers, data=image_bytes, params=params, timeout=60) as r:
+                if r.status == 200:
+                    return await r.read()
+                
+                # Если 503 — модель грузится, это нормально
+                err_info = await r.text()
+                logging.error(f"❌ HF API Style Error: {r.status} - {err_info}")
                 return None
         except Exception as e:
             logging.error(f"❌ Style Exception: {e}")
             return None
 
+# ====== REMOVE BACKGROUND ======
 async def hf_remove_bg(image_bytes: bytes):
-    """Удаление фона (Segmentation) через Router"""
     if not HF_TOKEN: return None
-    url = "https://router.huggingface.co/hf-inference/v1/image-segmentation"
+    url = f"https://api-inference.huggingface.co/models/{REMOVE_BG_MODEL}"
     
-    data = aiohttp.FormData()
-    data.add_field('image', image_bytes, filename='input.jpg', content_type='image/jpeg')
-    data.add_field('model', REMOVE_BG_MODEL)
+    headers = {
+        "Authorization": f"Bearer {HF_TOKEN}",
+        "Content-Type": "image/jpeg"
+    }
 
     async with await get_session() as session:
         try:
-            async with session.post(url, headers={"Authorization": f"Bearer {HF_TOKEN}"}, data=data) as r:
-                if r.status == 200: return await r.read()
-                logging.error(f"❌ NoBG Error: {r.status}")
+            async with session.post(url, headers=headers, data=image_bytes, timeout=60) as r:
+                if r.status == 200:
+                    return await r.read()
+                logging.error(f"❌ HF API NoBG Status: {r.status}")
                 return None
         except Exception as e:
             logging.error(f"❌ NoBG Exception: {e}")
             return None
 
+# ====== FACEFIX / UPSCALE ======
 async def hf_image_process(image_bytes: bytes, model: str):
-    """Апскейл и Лица (через универсальный Image-to-Image эндпоинт)"""
     if not HF_TOKEN: return None
-    # Важно: используем тот же роутер, так как старые эндпоинты могут выдать 410
-    url = "https://router.huggingface.co/hf-inference/v1/image-to-image"
+    url = f"https://api-inference.huggingface.co/models/{model}"
     
-    data = aiohttp.FormData()
-    data.add_field('image', image_bytes, filename='input.jpg', content_type='image/jpeg')
-    data.add_field('model', model)
-    data.add_field('prompt', "masterpiece, high quality, sharp focus")
+    headers = {
+        "Authorization": f"Bearer {HF_TOKEN}",
+        "Content-Type": "image/jpeg"
+    }
 
     async with await get_session() as session:
         try:
-            async with session.post(url, headers={"Authorization": f"Bearer {HF_TOKEN}"}, data=data) as r:
-                if r.status == 200: return await r.read()
-                logging.error(f"❌ Process Error: {r.status}")
+            async with session.post(url, headers=headers, data=image_bytes, timeout=60) as r:
+                if r.status == 200:
+                    return await r.read()
                 return None
         except Exception as e:
             logging.error(f"❌ Process Exception: {e}")
             return None
+
