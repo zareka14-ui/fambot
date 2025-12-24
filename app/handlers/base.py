@@ -16,6 +16,7 @@ from app.services.db import get_db
 from app.services.ai_image import (
     generate_best,
     hf_image_process,
+    hf_img2img,      # <--- ОБЯЗАТЕЛЬНО ДОБАВИТЬ ЭТУ СТРОКУ
     GFPGAN_MODEL,
     ESRGAN_MODEL
 )
@@ -162,3 +163,4 @@ async def cmd_style(message: Message):
         await message.answer("❌ Произошла ошибка.")
     finally:
         await status.delete()
+
