@@ -54,47 +54,57 @@ async def generate_best(prompt: str):
         logging.warning(f"⚠️ FLUX failed, switching to Pollinations: {e}")
         return await pollinations_generate(prompt)
 
+# ====== STYLE (IMAGE TO IMAGE) ======
 async def hf_img2img(image_bytes: bytes, prompt: str):
     if not HF_TOKEN: return None
-    # Используем прямой URL нового роутера
-    url = f"https://router.huggingface.co/hf-inference/models/{IMG2IMG_MODEL}"
+    
+    # ПРАВИЛЬНЫЙ URL для бесплатного API
+    url = f"https://api-inference.huggingface.co/models/{IMG2IMG_MODEL}"
     
     headers = {
         "Authorization": f"Bearer {HF_TOKEN}",
-        "Content-Type": "image/jpeg"
+        "x-use-cache": "false"
     }
     
-    # Промпт в новом API передается через параметры или специальные заголовки
-    params = {"inputs": prompt, "parameters": {"strength": 0.5}}
+    # Формат для Img2Img: картинка в body, промпт в заголовке или параметрах
+    payload = {
+        "inputs": prompt,
+        "image": None # В некоторых версиях API это игнорируется, если слать байты напрямую
+    }
 
     async with await get_session() as session:
         try:
-            async with session.post(url, headers=headers, data=image_bytes, params={"prompt": prompt}, timeout=60) as r:
+            # Для SD 1.5 лучше всего работает отправка байтов напрямую с промптом в параметрах
+            async with session.post(url, headers=headers, data=image_bytes, params={"inputs": prompt}, timeout=60) as r:
                 if r.status == 200:
-                    return await r.read()
+                    res = await r.read()
+                    if len(res) > 500: return res
                 
-                # Если 307 или 302, aiohttp обычно следует сам, но мы логируем статус
-                logging.error(f"❌ HF API Error: {r.status} {await r.text()}")
+                # Если 503 — модель грузится
+                logging.error(f"❌ HF Img2Img Status: {r.status}")
                 return None
         except Exception as e:
-            logging.error(f"❌ Direct Request Error (Img2Img): {e}")
+            logging.error(f"❌ Img2Img Exception: {e}")
             return None
 
+# ====== REMOVE BACKGROUND ======
 async def hf_remove_bg(image_bytes: bytes):
     if not HF_TOKEN: return None
-    url = f"https://router.huggingface.co/hf-inference/models/{REMOVE_BG_MODEL}"
     
+    # ПРАВИЛЬНЫЙ URL для бесплатного API
+    url = f"https://api-inference.huggingface.co/models/{REMOVE_BG_MODEL}"
     headers = {"Authorization": f"Bearer {HF_TOKEN}"}
 
     async with await get_session() as session:
         try:
             async with session.post(url, headers=headers, data=image_bytes, timeout=60) as r:
                 if r.status == 200:
-                    return await r.read()
-                logging.error(f"❌ HF BG Error: {r.status}")
+                    res = await r.read()
+                    if len(res) > 500: return res
+                logging.error(f"❌ HF NoBG Status: {r.status}")
                 return None
         except Exception as e:
-            logging.error(f"❌ Direct Request Error (NoBG): {e}")
+            logging.error(f"❌ NoBG Exception: {e}")
             return None
 
 async def hf_image_process(image_bytes: bytes, model: str):
