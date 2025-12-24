@@ -7,19 +7,23 @@ import aiohttp
 import socket
 import ssl
 from huggingface_hub import AsyncInferenceClient
+from PIL import Image
 
+# Настройки логирования
 logging.basicConfig(level=logging.INFO)
 
+# Токен и клиент
 HF_TOKEN = os.getenv("HUGGINGFACE_TOKEN")
 client = AsyncInferenceClient(token=HF_TOKEN)
 
-# Модели
+# Константы моделей
 GEN_MODEL = "black-forest-labs/FLUX.1-dev"
 IMG2IMG_MODEL = "runwayml/stable-diffusion-v1-5" 
 REMOVE_BG_MODEL = "briaai/RMBG-1.4"
 GFPGAN_MODEL = "TencentARC/GFPGAN"
 ESRGAN_MODEL = "nightmareai/real-esrgan"
 
+# Настройки SSL для aiohttp
 ssl_context = ssl.create_default_context()
 ssl_context.check_hostname = False
 ssl_context.verify_mode = ssl.CERT_NONE
@@ -28,6 +32,7 @@ async def get_session():
     connector = aiohttp.TCPConnector(family=socket.AF_INET, ssl=ssl_context)
     return aiohttp.ClientSession(connector=connector)
 
+# ====== ЗАПАСНОЙ ГЕНЕРАТОР ======
 async def pollinations_generate(prompt: str):
     seed = random.randint(1, 999999)
     encoded = urllib.parse.quote(prompt)
@@ -40,54 +45,64 @@ async def pollinations_generate(prompt: str):
             logging.error(f"Pollinations Error: {e}")
     return None
 
+# ====== ГЕНЕРАЦИЯ (FLUX) ======
 async def generate_best(prompt: str):
     try:
+        # Клиент сам разберется с роутингом для FLUX
         output_image = await client.text_to_image(prompt=prompt, model=GEN_MODEL)
         img_byte_arr = io.BytesIO()
         output_image.save(img_byte_arr, format='PNG')
         return img_byte_arr.getvalue()
     except Exception as e:
-        logging.warning(f"⚠️ FLUX busy: {e}")
+        logging.warning(f"⚠️ FLUX failed, switching to Pollinations: {e}")
         return await pollinations_generate(prompt)
 
-async def hf_router_query(image_bytes: bytes, model: str, prompt: str = "process image"):
-    """Универсальная функция для нового Router API"""
-    if not HF_TOKEN: return None
+# ====== УНИВЕРСАЛЬНЫЙ РОУТЕР ДЛЯ ОБРАБОТКИ КАРТИНКИ ======
+async def hf_router_query(image_bytes: bytes, model: str, prompt: str = ""):
+    """Прямой запрос к роутеру Hugging Face для обработки изображений"""
+    if not HF_TOKEN: 
+        logging.error("❌ No HF_TOKEN found")
+        return None
     
-    # Эндпоинт, который HF просит использовать вместо старого
-    url = f"https://router.huggingface.co/hf-inference/models/{model}"
+    # Актуальный путь роутера на декабрь 2025
+    url = f"https://router.huggingface.co/models/{model}"
     
-    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+    headers = {
+        "Authorization": f"Bearer {HF_TOKEN}",
+        "Content-Type": "image/jpeg",
+        "x-use-cache": "false"
+    }
     
-    # Router теперь часто требует multipart даже для простых моделей
-    data = aiohttp.FormData()
-    data.add_field('image', image_bytes, filename='input.jpg', content_type='image/jpeg')
-    data.add_field('inputs', prompt) 
+    # Промпт передаем через параметры, чтобы тело запроса было чистыми байтами
+    params = {}
+    if prompt:
+        params["inputs"] = prompt
 
     async with await get_session() as session:
         try:
-            async with session.post(url, headers=headers, data=data, timeout=60) as r:
+            async with session.post(url, headers=headers, data=image_bytes, params=params, timeout=60) as r:
                 if r.status == 200:
-                    return await r.read()
+                    res = await r.read()
+                    if len(res) > 500: return res
                 
-                # Если multipart не помог, пробуем отправить как raw binary (fallback)
-                if r.status in [400, 415]:
-                    async with session.post(url, headers=headers, data=image_bytes, params={"inputs": prompt}) as r2:
-                        if r2.status == 200: return await r2.read()
-                
-                logging.error(f"❌ Router Error for {model}: {r.status}")
+                # Логируем ошибку, если статус не 200
+                text = await r.text()
+                logging.error(f"❌ Router Error ({model}): {r.status} - {text[:100]}")
                 return None
         except Exception as e:
-            logging.error(f"❌ Router Exception: {e}")
+            logging.error(f"❌ Router Exception ({model}): {e}")
             return None
 
-# Привязываем функции к универсальному роутеру
+# ====== ПРИВЯЗКА ФУНКЦИЙ К РОУТЕРУ ======
+
 async def hf_img2img(image_bytes: bytes, prompt: str):
+    """Стилизация изображения"""
     return await hf_router_query(image_bytes, IMG2IMG_MODEL, prompt)
 
 async def hf_remove_bg(image_bytes: bytes):
-    # Для удаления фона промпт формален, но он нужен роутеру
-    return await hf_router_query(image_bytes, REMOVE_BG_MODEL, "transparent background")
+    """Удаление фона"""
+    return await hf_router_query(image_bytes, REMOVE_BG_MODEL)
 
 async def hf_image_process(image_bytes: bytes, model: str):
-    return await hf_router_query(image_bytes, model, "enhance quality")
+    """Улучшение лиц (GFPGAN) или Апскейл (ESRGAN)"""
+    return await hf_router_query(image_bytes, model)
