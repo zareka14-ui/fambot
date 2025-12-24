@@ -6,7 +6,7 @@ import random
 import ssl
 import socket
 import io
-
+import base64  # Добавь этот импорт в самое начало файла
 # Настройки SSL и IPv4 для стабильности на Render
 ssl_context = ssl.create_default_context()
 ssl_context.check_hostname = False
@@ -41,26 +41,36 @@ async def hf_generate_flux(prompt: str):
             return None
 
 async def hf_img2img(image_bytes: bytes, prompt: str):
-    """ Перерисовывает фото. Для HF API часто используется передача промпта в заголовке или параметрах при отправке байтов """
     if not HF_TOKEN: return None
     url = f"https://api-inference.huggingface.co/models/{IMG2IMG_MODEL}"
-    # Передаем промпт в заголовке, чтобы не мучаться с JSON/Base64, так как API HF это поддерживает
-    headers = {
-        "Authorization": f"Bearer {HF_TOKEN}",
-        "x-wait-for-model": "true",
-        "x-use-cache": "false"
-    }
+    headers = {"Authorization": f"Bearer {HF_TOKEN}", "x-wait-for-model": "true"}
     
-    # Для Img2Img часто лучше работает передача промпта как параметра URL или части данных
+    # Кодируем картинку в Base64
+    base64_image = base64.b64encode(image_bytes).decode("utf-8")
+    
+    # Формируем payload, который понимает большинство моделей на HF
+    payload = {
+        "inputs": prompt,
+        "image": base64_image,
+        "parameters": {
+            "strength": 0.5,
+            "guidance_scale": 7.5
+        }
+    }
+
     async with await get_session() as session:
         try:
-            # Отправляем байты изображения напрямую, промпт передаем через параметры
-            async with session.post(url, headers=headers, data=image_bytes, params={"prompt": prompt}, timeout=90) as r:
+            async with session.post(url, headers=headers, json=payload, timeout=120) as r:
                 if r.status == 200:
                     data = await r.read()
-                    logging.info("✅ Img2Img success")
+                    # Проверка на случай, если вернулся JSON с текстом вместо картинки
+                    if data.startswith(b"{"):
+                        logging.warning(f"HF returned JSON: {data.decode()}")
+                        return None
                     return data
-                logging.error(f"❌ Img2Img Error: {r.status}")
+                
+                # Если ошибка 503 — модель спит, нужно просто подождать 20 сек и повторить
+                logging.error(f"❌ HF Img2Img Error: {r.status}")
                 return None
         except Exception as e:
             logging.error(f"❗ Img2Img Exception: {e}")
