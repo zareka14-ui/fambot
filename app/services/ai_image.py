@@ -57,20 +57,25 @@ async def generate_best(prompt: str):
 async def hf_img2img(image_bytes: bytes, prompt: str):
     if not HF_TOKEN: return None
     try:
-        # Используем прямой post, чтобы обойти ошибки провайдеров типа 'nscale'
-        response = await client.post(
-            data=image_bytes,
-            model=IMG2IMG_MODEL,
-            task="image-to-image",
-            params={"prompt": prompt, "strength": 0.5}
-        )
-        # Если пришел ответ в байтах, возвращаем его
-        if isinstance(response, bytes): return response
+        # Конвертируем входные байты в объект PIL Image
+        input_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         
-        # Если пришел PIL Image, сохраняем в байты
-        img_byte_arr = io.BytesIO()
-        response.save(img_byte_arr, format='PNG')
-        return img_byte_arr.getvalue()
+        # Используем стандартный метод, но с базовой моделью
+        # Если провайдер 'nscale' не тянет, пробуем без указания модели (авто-выбор)
+        output = await client.image_to_image(
+            image=input_image,
+            prompt=prompt,
+            model=IMG2IMG_MODEL, # runwayml/stable-diffusion-v1-5
+            strength=0.5
+        )
+        
+        # Обработка ответа (может быть Image или bytes)
+        if isinstance(output, Image.Image):
+            img_byte_arr = io.BytesIO()
+            output.save(img_byte_arr, format='PNG')
+            return img_byte_arr.getvalue()
+        return output
+        
     except Exception as e:
         logging.error(f"❌ HF Router Error (Img2Img): {e}")
         return None
@@ -78,17 +83,20 @@ async def hf_img2img(image_bytes: bytes, prompt: str):
 async def hf_remove_bg(image_bytes: bytes):
     if not HF_TOKEN: return None
     try:
-        # Для сегментации тоже используем прямой post
-        response = await client.post(
-            data=image_bytes,
-            model=REMOVE_BG_MODEL,
-            task="image-segmentation"
-        )
-        if isinstance(response, bytes): return response
+        input_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         
-        img_byte_arr = io.BytesIO()
-        response.save(img_byte_arr, format='PNG')
-        return img_byte_arr.getvalue()
+        # Метод для сегментации (удаления фона)
+        output = await client.image_segmentation(
+            image=input_image,
+            model=REMOVE_BG_MODEL # briaai/RMBG-1.4
+        )
+        
+        if isinstance(output, Image.Image):
+            img_byte_arr = io.BytesIO()
+            output.save(img_byte_arr, format='PNG')
+            return img_byte_arr.getvalue()
+        return output
+        
     except Exception as e:
         logging.error(f"❌ HF Remove BG Error: {e}")
         return None
