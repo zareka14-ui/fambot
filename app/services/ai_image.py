@@ -56,36 +56,54 @@ async def generate_best(prompt: str):
         return await pollinations_generate(prompt)
 
 # СТИЛИЗАЦИЯ (Прямой запрос)
+# ====== STYLE (IMAGE TO IMAGE) ======
 async def hf_img2img(image_bytes: bytes, prompt: str):
     if not HF_TOKEN: return None
-    url = f"https://api-inference.huggingface.co/models/{IMG2IMG_MODEL}"
-    headers = {"Authorization": f"Bearer {HF_TOKEN}", "x-use-cache": "false"}
+    # Новый универсальный адрес роутера
+    url = "https://router.huggingface.co/hf-inference/v1/image-to-image"
     
+    headers = {
+        "Authorization": f"Bearer {HF_TOKEN}"
+    }
+    
+    # Для нового роутера используем FormData или Multipart запрос
+    data = aiohttp.FormData()
+    data.add_field('image', image_bytes, filename='input.jpg', content_type='image/jpeg')
+    data.add_field('prompt', prompt)
+    data.add_field('model', IMG2IMG_MODEL)
+
     async with await get_session() as session:
         try:
-            async with session.post(url, headers=headers, data=image_bytes, params={"inputs": prompt}, timeout=60) as r:
+            async with session.post(url, headers=headers, data=data, timeout=60) as r:
                 if r.status == 200:
-                    res = await r.read()
-                    if len(res) > 500: return res
-                logging.error(f"❌ HF Img2Img Status: {r.status}")
+                    return await r.read()
+                
+                # Если роутер ругается, логируем подробности
+                err_text = await r.text()
+                logging.error(f"❌ HF Router Style Error: {r.status} - {err_text}")
                 return None
         except Exception as e:
-            logging.error(f"❌ Img2Img Exception: {e}")
+            logging.error(f"❌ Style Exception: {e}")
             return None
 
-# УДАЛЕНИЕ ФОНА (Прямой запрос)
+# ====== REMOVE BACKGROUND ======
 async def hf_remove_bg(image_bytes: bytes):
     if not HF_TOKEN: return None
-    url = f"https://api-inference.huggingface.co/models/{REMOVE_BG_MODEL}"
+    # Для сегментации/удаления фона адрес отличается
+    url = "https://router.huggingface.co/hf-inference/v1/image-segmentation"
+    
     headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+    
+    data = aiohttp.FormData()
+    data.add_field('image', image_bytes, filename='input.jpg', content_type='image/jpeg')
+    data.add_field('model', REMOVE_BG_MODEL)
 
     async with await get_session() as session:
         try:
-            async with session.post(url, headers=headers, data=image_bytes, timeout=60) as r:
+            async with session.post(url, headers=headers, data=data, timeout=60) as r:
                 if r.status == 200:
-                    res = await r.read()
-                    if len(res) > 500: return res
-                logging.error(f"❌ HF NoBG Status: {r.status}")
+                    return await r.read()
+                logging.error(f"❌ HF Router NoBG Status: {r.status} - {await r.text()}")
                 return None
         except Exception as e:
             logging.error(f"❌ NoBG Exception: {e}")
