@@ -7,7 +7,6 @@ import aiohttp
 import socket
 import ssl
 from huggingface_hub import AsyncInferenceClient
-from PIL import Image
 
 # Настройки логирования
 logging.basicConfig(level=logging.INFO)
@@ -23,7 +22,7 @@ REMOVE_BG_MODEL = "briaai/RMBG-1.4"
 GFPGAN_MODEL = "TencentARC/GFPGAN"
 ESRGAN_MODEL = "nightmareai/real-esrgan"
 
-# Настройки SSL для aiohttp
+# Настройки SSL
 ssl_context = ssl.create_default_context()
 ssl_context.check_hostname = False
 ssl_context.verify_mode = ssl.CERT_NONE
@@ -32,7 +31,7 @@ async def get_session():
     connector = aiohttp.TCPConnector(family=socket.AF_INET, ssl=ssl_context)
     return aiohttp.ClientSession(connector=connector)
 
-# ====== ЗАПАСНОЙ ГЕНЕРАТОР ======
+# ====== ЗАПАСНОЙ ГЕНЕРАТОР (Pollinations) ======
 async def pollinations_generate(prompt: str):
     seed = random.randint(1, 999999)
     encoded = urllib.parse.quote(prompt)
@@ -45,64 +44,57 @@ async def pollinations_generate(prompt: str):
             logging.error(f"Pollinations Error: {e}")
     return None
 
-# ====== ГЕНЕРАЦИЯ (FLUX) ======
+# ====== ГЕНЕРАЦИЯ (FLUX) - РАБОТАЕТ ХОРОШО ======
 async def generate_best(prompt: str):
     try:
-        # Клиент сам разберется с роутингом для FLUX
         output_image = await client.text_to_image(prompt=prompt, model=GEN_MODEL)
         img_byte_arr = io.BytesIO()
         output_image.save(img_byte_arr, format='PNG')
         return img_byte_arr.getvalue()
     except Exception as e:
-        logging.warning(f"⚠️ FLUX failed, switching to Pollinations: {e}")
+        logging.warning(f"⚠️ FLUX failed: {e}")
         return await pollinations_generate(prompt)
 
-# ====== УНИВЕРСАЛЬНЫЙ РОУТЕР ДЛЯ ОБРАБОТКИ КАРТИНКИ ======
-async def hf_router_query(image_bytes: bytes, model: str, prompt: str = ""):
-    """Прямой запрос к роутеру Hugging Face для обработки изображений"""
-    if not HF_TOKEN: 
-        logging.error("❌ No HF_TOKEN found")
-        return None
+# ====== ОБРАБОТКА (КЛАССИЧЕСКИЙ API) - ИСПРАВЛЕНИЕ 404 ======
+async def hf_classic_query(image_bytes: bytes, model: str, prompt: str = None):
+    """Используем классический Inference API, так как роутер не видит бесплатные модели"""
+    if not HF_TOKEN: return None
     
-    # Актуальный путь роутера на декабрь 2025
-    url = f"https://router.huggingface.co/models/{model}"
+    # Прямой путь к модели (наиболее надежный для бесплатных задач)
+    url = f"https://api-inference.huggingface.co/models/{model}"
     
     headers = {
         "Authorization": f"Bearer {HF_TOKEN}",
-        "Content-Type": "image/jpeg",
         "x-use-cache": "false"
     }
-    
-    # Промпт передаем через параметры, чтобы тело запроса было чистыми байтами
-    params = {}
-    if prompt:
-        params["inputs"] = prompt
 
     async with await get_session() as session:
         try:
+            # Для SD 1.5 нужен промпт, для RMBG и апскейла - только байты
+            params = {"inputs": prompt} if prompt else {}
+            
             async with session.post(url, headers=headers, data=image_bytes, params=params, timeout=60) as r:
                 if r.status == 200:
                     res = await r.read()
                     if len(res) > 500: return res
                 
-                # Логируем ошибку, если статус не 200
-                text = await r.text()
-                logging.error(f"❌ Router Error ({model}): {r.status} - {text[:100]}")
+                # Если 503 - модель "спит", нужно подождать
+                if r.status == 503:
+                    logging.info(f"⏳ Модель {model} просыпается...")
+                
+                logging.error(f"❌ HF API Error ({model}): {r.status}")
                 return None
         except Exception as e:
-            logging.error(f"❌ Router Exception ({model}): {e}")
+            logging.error(f"❌ HF API Exception ({model}): {e}")
             return None
 
-# ====== ПРИВЯЗКА ФУНКЦИЙ К РОУТЕРУ ======
+# ====== ПУБЛИЧНЫЕ ФУНКЦИИ ======
 
 async def hf_img2img(image_bytes: bytes, prompt: str):
-    """Стилизация изображения"""
-    return await hf_router_query(image_bytes, IMG2IMG_MODEL, prompt)
+    return await hf_classic_query(image_bytes, IMG2IMG_MODEL, prompt)
 
 async def hf_remove_bg(image_bytes: bytes):
-    """Удаление фона"""
-    return await hf_router_query(image_bytes, REMOVE_BG_MODEL)
+    return await hf_classic_query(image_bytes, REMOVE_BG_MODEL)
 
 async def hf_image_process(image_bytes: bytes, model: str):
-    """Улучшение лиц (GFPGAN) или Апскейл (ESRGAN)"""
-    return await hf_router_query(image_bytes, model)
+    return await hf_classic_query(image_bytes, model)
