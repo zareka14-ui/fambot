@@ -64,23 +64,44 @@ async def generate_best(prompt: str):
         return await pollinations_generate(prompt)
 
 async def hf_img2img(image_bytes: bytes, prompt: str):
-    """Стилизация (Image-to-Image)"""
     if not HF_TOKEN: return None
     try:
         input_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         
+        # Явно указываем задачу 'image-to-image'
         output_image = await client.image_to_image(
             image=input_image,
             prompt=prompt,
             model=IMG2IMG_MODEL,
-            strength=0.5
+            strength=0.5,
+            task="image-to-image" # <--- Добавляем явное указание задачи
         )
         
         img_byte_arr = io.BytesIO()
         output_image.save(img_byte_arr, format='PNG')
         return img_byte_arr.getvalue()
     except Exception as e:
+        # Если SDXL не тянет, пробуем более легкую модель
         logging.error(f"❌ HF Router Error (Img2Img): {e}")
+        return None
+
+async def hf_remove_bg(image_bytes: bytes):
+    if not HF_TOKEN: return None
+    try:
+        input_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        
+        # Для сегментации тоже указываем задачу явно
+        output_image = await client.image_segmentation(
+            image=input_image,
+            model="briaai/RMBG-1.4",
+            task="image-segmentation" # <--- Явное указание
+        )
+        
+        img_byte_arr = io.BytesIO()
+        output_image.save(img_byte_arr, format='PNG')
+        return img_byte_arr.getvalue()
+    except Exception as e:
+        logging.error(f"❌ HF Remove BG Error: {e}")
         return None
 
 async def hf_image_process(image_bytes: bytes, model: str):
