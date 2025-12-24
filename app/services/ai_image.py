@@ -56,50 +56,46 @@ async def generate_best(prompt: str):
 
 async def hf_img2img(image_bytes: bytes, prompt: str):
     if not HF_TOKEN: return None
-    try:
-        # Конвертируем входные байты в объект PIL Image
-        input_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        
-        # Используем стандартный метод, но с базовой моделью
-        # Если провайдер 'nscale' не тянет, пробуем без указания модели (авто-выбор)
-        output = await client.image_to_image(
-            image=input_image,
-            prompt=prompt,
-            model=IMG2IMG_MODEL, # runwayml/stable-diffusion-v1-5
-            strength=0.5
-        )
-        
-        # Обработка ответа (может быть Image или bytes)
-        if isinstance(output, Image.Image):
-            img_byte_arr = io.BytesIO()
-            output.save(img_byte_arr, format='PNG')
-            return img_byte_arr.getvalue()
-        return output
-        
-    except Exception as e:
-        logging.error(f"❌ HF Router Error (Img2Img): {e}")
-        return None
+    # Используем прямой URL нового роутера
+    url = f"https://router.huggingface.co/hf-inference/models/{IMG2IMG_MODEL}"
+    
+    headers = {
+        "Authorization": f"Bearer {HF_TOKEN}",
+        "Content-Type": "image/jpeg"
+    }
+    
+    # Промпт в новом API передается через параметры или специальные заголовки
+    params = {"inputs": prompt, "parameters": {"strength": 0.5}}
+
+    async with await get_session() as session:
+        try:
+            async with session.post(url, headers=headers, data=image_bytes, params={"prompt": prompt}, timeout=60) as r:
+                if r.status == 200:
+                    return await r.read()
+                
+                # Если 307 или 302, aiohttp обычно следует сам, но мы логируем статус
+                logging.error(f"❌ HF API Error: {r.status} {await r.text()}")
+                return None
+        except Exception as e:
+            logging.error(f"❌ Direct Request Error (Img2Img): {e}")
+            return None
 
 async def hf_remove_bg(image_bytes: bytes):
     if not HF_TOKEN: return None
-    try:
-        input_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        
-        # Метод для сегментации (удаления фона)
-        output = await client.image_segmentation(
-            image=input_image,
-            model=REMOVE_BG_MODEL # briaai/RMBG-1.4
-        )
-        
-        if isinstance(output, Image.Image):
-            img_byte_arr = io.BytesIO()
-            output.save(img_byte_arr, format='PNG')
-            return img_byte_arr.getvalue()
-        return output
-        
-    except Exception as e:
-        logging.error(f"❌ HF Remove BG Error: {e}")
-        return None
+    url = f"https://router.huggingface.co/hf-inference/models/{REMOVE_BG_MODEL}"
+    
+    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+
+    async with await get_session() as session:
+        try:
+            async with session.post(url, headers=headers, data=image_bytes, timeout=60) as r:
+                if r.status == 200:
+                    return await r.read()
+                logging.error(f"❌ HF BG Error: {r.status}")
+                return None
+        except Exception as e:
+            logging.error(f"❌ Direct Request Error (NoBG): {e}")
+            return None
 
 async def hf_image_process(image_bytes: bytes, model: str):
     if not HF_TOKEN: return None
