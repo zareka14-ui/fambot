@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import sys
+import re
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -42,9 +43,9 @@ def get_start_kb():
         resize_keyboard=True, one_time_keyboard=True
     )
 
-# --- ХЭНДЛЕРЫ ЗАЩИТЫ ---
+# --- ХЭНДЛЕРЫ ---
 
-# 1. Сброс состояния при /start в любой момент
+# 1. Сброс состояния при /start
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
@@ -62,7 +63,7 @@ async def start_form(message: types.Message, state: FSMContext):
                          reply_markup=types.ReplyKeyboardRemove(), parse_mode="Markdown")
     await state.set_state(Registration.waiting_for_name)
 
-# 3. Обработка ФИО (+ защита от не-текста)
+# 3. Обработка ФИО + Защита
 @dp.message(Registration.waiting_for_name, F.text)
 async def process_name(message: types.Message, state: FSMContext):
     await state.update_data(name=message.text)
@@ -73,16 +74,22 @@ async def process_name(message: types.Message, state: FSMContext):
 async def warn_name(message: types.Message):
     await message.answer("⚠️ Пожалуйста, пришлите ваше ФИО текстом.")
 
-# 4. Обработка контакта (+ защита)
+# 4. Обработка контакта + Валидация (защита от дурака)
 @dp.message(Registration.waiting_for_contact, F.text)
 async def process_contact(message: types.Message, state: FSMContext):
-    await state.update_data(contact=message.text)
-    await message.answer("Есть ли у вас **аллергия** (на масла, травы, металлы)? Если нет — напишите «Нет».", parse_mode="Markdown")
-    await state.set_state(Registration.waiting_for_allergies)
+    # Очищаем ввод от всего, кроме цифр для проверки
+    phone_digits = re.sub(r'\D', '', message.text)
+    
+    if 10 <= len(phone_digits) <= 15: # Валидация длины номера
+        await state.update_data(contact=message.text)
+        await message.answer("Есть ли у вас **аллергия** (на масла, травы, металлы)? Если нет — напишите «Нет».", parse_mode="Markdown")
+        await state.set_state(Registration.waiting_for_allergies)
+    else:
+        await message.answer("⚠️ **Некорректный формат.** Пожалуйста, введите номер телефона (например, +79991234567).")
 
 @dp.message(Registration.waiting_for_contact)
 async def warn_contact(message: types.Message):
-    await message.answer("⚠️ Пожалуйста, введите номер телефона или ник текстом.")
+    await message.answer("⚠️ Пожалуйста, введите номер телефона текстом.")
 
 # 5. Обработка аллергий
 @dp.message(Registration.waiting_for_allergies, F.text)
@@ -95,10 +102,14 @@ async def process_allergies(message: types.Message, state: FSMContext):
     await message.answer("Пожалуйста, ознакомьтесь с офертой и подтвердите согласие кнопкой ниже.", reply_markup=kb)
     await state.set_state(Registration.waiting_for_offer_agreement)
 
-# 6. Защита на этапе оферты (если пользователь пишет вместо нажатия кнопки)
+@dp.message(Registration.waiting_for_allergies)
+async def warn_allergies(message: types.Message):
+    await message.answer("⚠️ Опишите аллергии текстом или напишите «Нет».")
+
+# 6. Защита на этапе оферты
 @dp.message(Registration.waiting_for_offer_agreement)
 async def warn_offer(message: types.Message):
-    await message.answer("⚠️ Чтобы продолжить, нужно нажать на кнопку «Я подтверждаю согласие» выше.")
+    await message.answer("⚠️ Нажмите на кнопку «Я подтверждаю согласие» выше, чтобы продолжить.")
 
 @dp.callback_query(F.data == "offer_accepted", Registration.waiting_for_offer_agreement)
 async def process_offer(callback: types.CallbackQuery, state: FSMContext):
@@ -137,12 +148,13 @@ async def process_payment_proof(message: types.Message, state: FSMContext):
 
 @dp.message(Registration.waiting_for_payment_proof)
 async def warn_payment(message: types.Message):
-    await message.answer("⚠️ Пожалуйста, пришлите подтверждение оплаты в виде **фотографии (скриншота)** или **файла**.")
+    await message.answer("⚠️ Пожалуйста, пришлите скриншот или PDF-файл чека.")
 
-# 8. Глобальный эхо-обработчик (для всех сообщений "не в тему")
+# 8. Глобальный эхо-обработчик
 @dp.message()
 async def global_echo(message: types.Message):
-    await message.answer("Я вас не совсем понял. Чтобы начать сначала, нажмите /start или используйте кнопки меню.")
+    await message.answer("Я вас не совсем понял. Чтобы начать, нажмите кнопку «Начать регистрацию» или введите /start", 
+                         reply_markup=get_start_kb())
 
 # --- ВЕБ-СЕРВЕР ---
 async def handle(request):
@@ -158,13 +170,11 @@ async def start_web_server():
 
 # --- ЗАПУСК ---
 async def main():
-    # Удаляем вебхуки и ставим кнопку "Меню" в интерфейс
     await bot.delete_webhook(drop_pending_updates=True)
     await bot.set_my_commands([
         types.BotCommand(command="start", description="Начать регистрацию")
     ])
     
-    # Запускаем бота и сервер
     logging.info("Starting bot...")
     await asyncio.gather(
         dp.start_polling(bot),
