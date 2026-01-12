@@ -71,7 +71,7 @@ async def process_contact(message: types.Message, state: FSMContext):
 @dp.message(Registration.waiting_for_allergies)
 async def process_allergies(message: types.Message, state: FSMContext):
     await state.update_data(allergies=message.text)
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Принимаю условия оферты", url=OFFER_LINK)],
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ условия оферты", url=OFFER_LINK)],
                                                [InlineKeyboardButton(text="📝 Я подтверждаю согласие", callback_data="offer_accepted")]])
     await message.answer(f"Пожалуйста, ознакомьтесь с офертой и подтвердите согласие кнопкой ниже.", reply_markup=kb)
     await state.set_state(Registration.waiting_for_offer_agreement)
@@ -80,7 +80,7 @@ async def process_allergies(message: types.Message, state: FSMContext):
 async def process_offer(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     booking_text = (
-        "Принято! Твой запрос услышан полем.\n"
+        "Принято! \n"
         "Для бронирования места (депозит 2999 руб) используйте реквизиты:\n"
         f"{PAYMENT_INFO}\n\n"
         "📎 **Отправьте чек об оплате (скриншот) сюда.**"
@@ -135,3 +135,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logging.info("Bot stopped!")
+
