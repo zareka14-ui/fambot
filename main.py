@@ -7,14 +7,13 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
-from aiohttp import web # Добавляем для обмана Render
-# --- КОНФИГУРАЦИЯ ---
-# Если запускаешь локально, используй .env, на Render пропиши переменные в Environment
-TOKEN = os.getenv("BOT_TOKEN") 
-# ID админа, куда будут приходить заполненные анкеты (узнать свой ID можно у бота @userinfobot)
-ADMIN_ID = os.getenv("ADMIN_ID") 
+from aiohttp import web
 
-# Реквизиты для оплаты
+# --- КОНФИГУРАЦИЯ ---
+TOKEN = os.getenv("BOT_TOKEN") 
+ADMIN_ID = os.getenv("ADMIN_ID") 
+PORT = int(os.getenv("PORT", 8080)) # Порт для Render
+
 PAYMENT_INFO = """
 Перевод по номеру телефона:
 +7 912 459 1439 (СберБанк и Тбанк)
@@ -23,7 +22,6 @@ PAYMENT_INFO = """
 Сумма депозита: 2999 руб.
 """
 
-# Ссылка на оферту (замени на свою ссылку на Google Doc или Teletype)
 OFFER_LINK = "https://disk.yandex.ru/i/965-_UGNIPkaaQ"
 
 class Registration(StatesGroup):
@@ -73,8 +71,9 @@ async def process_contact(message: types.Message, state: FSMContext):
 @dp.message(Registration.waiting_for_allergies)
 async def process_allergies(message: types.Message, state: FSMContext):
     await state.update_data(allergies=message.text)
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Принимаю условия оферты", callback_data="offer_accepted")]])
-    await message.answer(f"Перед оплатой примите оферту: {OFFER_LINK}", reply_markup=kb)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Принимаю условия оферты", url=OFFER_LINK)],
+                                               [InlineKeyboardButton(text="📝 Я подтверждаю согласие", callback_data="offer_accepted")]])
+    await message.answer(f"Пожалуйста, ознакомьтесь с офертой и подтвердите согласие кнопкой ниже.", reply_markup=kb)
     await state.set_state(Registration.waiting_for_offer_agreement)
 
 @dp.callback_query(F.data == "offer_accepted", Registration.waiting_for_offer_agreement)
@@ -94,42 +93,38 @@ async def process_offer(callback: types.CallbackQuery, state: FSMContext):
 async def process_payment_proof(message: types.Message, state: FSMContext):
     user_data = await state.get_data()
     admin_report = (
-        "🆕 **НОВАЯ ЗАЯВКА!**\n"
-        f"👤 ФИО: {user_data['name']}\n"
-        f"📞 Связь: {user_data['contact']}\n"
-        f"⚠️ Аллергии: {user_data['allergies']}\n"
-        f"🔗 Профиль: {message.from_user.mention_html()}"
+        "🆕 **НОВАЯ ЗАЯВКА!**\n\n"
+        f"👤 **ФИО:** {user_data['name']}\n"
+        f"📞 **Связь:** {user_data['contact']}\n"
+        f"⚠️ **Аллергии:** {user_data['allergies']}\n"
+        f"🔗 **Профиль:** {message.from_user.mention_html()}"
     )
     if ADMIN_ID:
-        await bot.send_message(ADMIN_ID, admin_report, parse_mode="HTML")
-        await message.forward(ADMIN_ID)
+        try:
+            await bot.send_message(ADMIN_ID, admin_report, parse_mode="HTML")
+            await message.copy_to(ADMIN_ID) # Копируем чек админу
+        except Exception as e:
+            logging.error(f"Ошибка отправки админу: {e}")
     
-    await message.answer("Благодарим! Ваша бронь принята. Мы скоро свяжемся с вами. Готовьте удобную одежду!")
+    await message.answer("Благодарим! Ваша бронь принята. Мы скоро свяжемся с вами. Готовьте удобную одежду! 🔥")
     await state.clear()
 
-@dp.message(Registration.waiting_for_payment_proof)
-async def incorrect_payment_type(message: types.Message):
-    await message.answer("Пожалуйста, прикрепите **изображение чека**.")
-
-# --- HEALTH CHECK SERVER (ДЛЯ RENDER) ---
-async def health_check(request):
-    return web.Response(text="Bot is running OK")
+# --- ВЕБ-СЕРВЕР ДЛЯ RENDER ---
+async def handle(request):
+    return web.Response(text="Bot is alive")
 
 async def start_web_server():
     app = web.Application()
-    app.router.add_get('/', health_check)
+    app.router.add_get('/', handle)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', PORT)
     await site.start()
-    logging.info(f"Web server started on port {PORT}")
 
 # --- ЗАПУСК ---
 async def main():
-    # Удаляем вебхук, чтобы гарантировать работу поллинга
     await bot.delete_webhook(drop_pending_updates=True)
-    
-    # Запускаем и бота, и веб-сервер параллельно
+    # Запускаем бота и сервер одновременно
     await asyncio.gather(
         dp.start_polling(bot),
         start_web_server()
@@ -140,7 +135,3 @@ if __name__ == "__main__":
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logging.info("Bot stopped!")
-
-if __name__ == "__main__":
-    asyncio.run(main())
-
