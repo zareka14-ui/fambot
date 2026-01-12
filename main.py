@@ -15,125 +15,132 @@ TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = os.getenv("ADMIN_ID") 
 PORT = int(os.getenv("PORT", 8080))
 
-PAYMENT_INFO = """
-**Перевод по номеру телефона:**
-`+79124591439` (СберБанк и Тбанк)
-Получатель: Екатерина Б.
-
-Сумма депозита: **2999 руб.**
-"""
-
 OFFER_LINK = "https://disk.yandex.ru/i/965-_UGNIPkaaQ"
 
 class Registration(StatesGroup):
     waiting_for_name = State()
     waiting_for_contact = State()
     waiting_for_allergies = State()
-    waiting_for_offer_agreement = State()
+    confirm_data = State() # Новый этап проверки
     waiting_for_payment_proof = State()
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
-# --- ВСПОМОГАТЕЛЬНЫЕ КЛАВИАТУРЫ ---
+# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 def get_start_kb():
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="Начать регистрацию")]],
+        keyboard=[[KeyboardButton(text="🚀 Начать регистрацию")]],
         resize_keyboard=True, one_time_keyboard=True
     )
 
+def get_progress(step):
+    """Визуальный индикатор прогресса"""
+    steps = ["⬜", "⬜", "⬜", "⬜"]
+    for i in range(step):
+        steps[i] = "✅"
+    return "".join(steps)
+
 # --- ХЭНДЛЕРЫ ---
 
-# 1. Сброс состояния при /start
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     welcome_text = (
-        "✨ **Регистрация на мистерию «Сила Рода: Сталь, Соль и Огонь»**\n\n"
-        "Это не просто мастер-класс, а сакральный обряд очищения. "
-        "Чтобы мы подготовили ваш набор артефактов, ответьте на вопросы."
+        "✨ **МИСТЕРИЯ «СИЛА РОДА»**\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "Добро пожаловать в сакральное пространство. Чтобы подготовить ваш "
+        "индивидуальный набор артефактов, нам нужно познакомиться.\n\n"
+        "Нажмите кнопку ниже, чтобы начать."
     )
     await message.answer(welcome_text, parse_mode="Markdown", reply_markup=get_start_kb())
 
-# 2. Начало регистрации
-@dp.message(F.text == "Начать регистрацию")
+@dp.message(F.text == "🚀 Начать регистрацию")
 async def start_form(message: types.Message, state: FSMContext):
-    await message.answer("Пожалуйста, напишите ваше **ФИО** полностью.", 
-                         reply_markup=types.ReplyKeyboardRemove(), parse_mode="Markdown")
+    await message.answer(
+        f"{get_progress(0)}\n**Шаг 1:** Введите ваше **ФИО** полностью:",
+        reply_markup=types.ReplyKeyboardRemove(), parse_mode="Markdown"
+    )
     await state.set_state(Registration.waiting_for_name)
 
-# 3. Обработка ФИО + Защита
 @dp.message(Registration.waiting_for_name, F.text)
 async def process_name(message: types.Message, state: FSMContext):
     await state.update_data(name=message.text)
-    await message.answer("Напишите ваш **контакт для связи** (номер телефона).", parse_mode="Markdown")
+    await message.answer(
+        f"{get_progress(1)}\n**Шаг 2:** Напишите ваш **номер телефона**:\n"
+        "_(Или ник в Telegram)_", parse_mode="Markdown"
+    )
     await state.set_state(Registration.waiting_for_contact)
 
-@dp.message(Registration.waiting_for_name)
-async def warn_name(message: types.Message):
-    await message.answer("⚠️ Пожалуйста, пришлите ваше ФИО текстом.")
-
-# 4. Обработка контакта + Валидация (защита от дурака)
 @dp.message(Registration.waiting_for_contact, F.text)
 async def process_contact(message: types.Message, state: FSMContext):
-    # Очищаем ввод от всего, кроме цифр для проверки
     phone_digits = re.sub(r'\D', '', message.text)
-    
-    if 10 <= len(phone_digits) <= 15: # Валидация длины номера
+    if 10 <= len(phone_digits) <= 15 or message.text.startswith('@'):
         await state.update_data(contact=message.text)
-        await message.answer("Есть ли у вас **аллергия** (на масла, травы, металлы)? Если нет — напишите «Нет».", parse_mode="Markdown")
+        await message.answer(
+            f"{get_progress(2)}\n**Шаг 3:** Есть ли у вас **аллергия**?\n"
+            "_(Масла, травы, металлы). Если нет — напишите «Нет»._", parse_mode="Markdown"
+        )
         await state.set_state(Registration.waiting_for_allergies)
     else:
-        await message.answer("⚠️ **Некорректный формат.** Пожалуйста, введите номер телефона (например, +79991234567).")
+        await message.answer("⚠️ Пожалуйста, введите корректный номер или @username.")
 
-@dp.message(Registration.waiting_for_contact)
-async def warn_contact(message: types.Message):
-    await message.answer("⚠️ Пожалуйста, введите номер телефона текстом.")
-
-# 5. Обработка аллергий
 @dp.message(Registration.waiting_for_allergies, F.text)
 async def process_allergies(message: types.Message, state: FSMContext):
     await state.update_data(allergies=message.text)
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Условия оферты", url=OFFER_LINK)],
-        [InlineKeyboardButton(text="📝 Я подтверждаю согласие", callback_data="offer_accepted")]
-    ])
-    await message.answer("Пожалуйста, ознакомьтесь с офертой и подтвердите согласие кнопкой ниже.", reply_markup=kb)
-    await state.set_state(Registration.waiting_for_offer_agreement)
-
-@dp.message(Registration.waiting_for_allergies)
-async def warn_allergies(message: types.Message):
-    await message.answer("⚠️ Опишите аллергии текстом или напишите «Нет».")
-
-# 6. Защита на этапе оферты
-@dp.message(Registration.waiting_for_offer_agreement)
-async def warn_offer(message: types.Message):
-    await message.answer("⚠️ Нажмите на кнопку «Я подтверждаю согласие» выше, чтобы продолжить.")
-
-@dp.callback_query(F.data == "offer_accepted", Registration.waiting_for_offer_agreement)
-async def process_offer(callback: types.CallbackQuery, state: FSMContext):
-    await callback.answer()
-    booking_text = (
-        "Принято! \n\n"
-        "Для бронирования места используйте реквизиты:\n"
-        f"{PAYMENT_INFO}\n\n"
-        "📎 **Отправьте чек об оплате (скриншот или PDF) сюда.**"
+    data = await state.get_data()
+    
+    # ЭТАП ПОДТВЕРЖДЕНИЯ (КРАСОТА И УДОБСТВО)
+    summary = (
+        f"{get_progress(3)}\n**ПРОВЕРЬТЕ ВАШИ ДАННЫЕ:**\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"👤 **ФИО:** {data['name']}\n"
+        f"📞 **Связь:** {data['contact']}\n"
+        f"⚠️ **Аллергии:** {data['allergies']}\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "Если всё верно — подтвердите оферту."
     )
-    await callback.message.edit_text("✅ Оферта принята.")
-    await callback.message.answer(booking_text, parse_mode="Markdown")
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📜 Читать оферту", url=OFFER_LINK)],
+        [InlineKeyboardButton(text="✅ Все верно, согласен", callback_data="confirm_ok")],
+        [InlineKeyboardButton(text="❌ Заполнить заново", callback_data="restart")]
+    ])
+    await message.answer(summary, reply_markup=kb, parse_mode="Markdown")
+    await state.set_state(Registration.confirm_data)
+
+@dp.callback_query(F.data == "restart")
+async def restart_form(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer("Сброс данных...")
+    await start_form(callback.message, state)
+
+@dp.callback_query(F.data == "confirm_ok", Registration.confirm_data)
+async def process_confirm(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    pay_text = (
+        "✅ **ДАННЫЕ ПРИНЯТЫ**\n\n"
+        "Для бронирования места переведите депозит **2999 руб.**\n\n"
+        "📌 **Реквизиты (нажмите, чтобы скопировать):**\n"
+        "`+79124591439` (Сбер / Т-Банк)\n"
+        "👤 Получатель: Екатерина Б.\n\n"
+        "📎 **После оплаты пришлите скриншот чека сюда.**"
+    )
+    await callback.message.edit_text(pay_text, parse_mode="Markdown")
     await state.set_state(Registration.waiting_for_payment_proof)
 
-# 7. Обработка чека (только фото или документ)
 @dp.message(Registration.waiting_for_payment_proof, F.photo | F.document)
 async def process_payment_proof(message: types.Message, state: FSMContext):
     user_data = await state.get_data()
     admin_report = (
-        "🆕 **НОВАЯ ЗАЯВКА!**\n\n"
+        "🔥 **НОВАЯ ЗАЯВКА НА МИСТЕРИЮ**\n"
+        "━━━━━━━━━━━━━━━━━━\n"
         f"👤 **ФИО:** {user_data.get('name')}\n"
         f"📞 **Связь:** {user_data.get('contact')}\n"
         f"⚠️ **Аллергии:** {user_data.get('allergies')}\n"
-        f"🔗 **Профиль:** {message.from_user.mention_html()}"
+        f"🆔 ID: <code>{message.from_user.id}</code>\n"
+        f"🔗 Профиль: {message.from_user.mention_html()}\n"
+        "━━━━━━━━━━━━━━━━━━"
     )
     
     if ADMIN_ID:
@@ -141,20 +148,14 @@ async def process_payment_proof(message: types.Message, state: FSMContext):
             await bot.send_message(ADMIN_ID, admin_report, parse_mode="HTML")
             await message.copy_to(ADMIN_ID)
         except Exception as e:
-            logging.error(f"Ошибка отправки админу: {e}")
+            logging.error(f"Ошибка админа: {e}")
     
-    await message.answer("Благодарим! Ваша бронь принята. Мы скоро свяжемся с вами. 🔥", reply_markup=get_start_kb())
+    await message.answer(
+        "✨ **БЛАГОДАРИМ!**\n\nВаша бронь принята. Мы свяжемся с вами в ближайшее время для подтверждения. "
+        "До встречи на мистерии!", 
+        reply_markup=get_start_kb(), parse_mode="Markdown"
+    )
     await state.clear()
-
-@dp.message(Registration.waiting_for_payment_proof)
-async def warn_payment(message: types.Message):
-    await message.answer("⚠️ Пожалуйста, пришлите скриншот или PDF-файл чека.")
-
-# 8. Глобальный эхо-обработчик
-@dp.message()
-async def global_echo(message: types.Message):
-    await message.answer("Я вас не совсем понял. Чтобы начать, нажмите кнопку «Начать регистрацию» или введите /start", 
-                         reply_markup=get_start_kb())
 
 # --- ВЕБ-СЕРВЕР ---
 async def handle(request):
@@ -171,15 +172,8 @@ async def start_web_server():
 # --- ЗАПУСК ---
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
-    await bot.set_my_commands([
-        types.BotCommand(command="start", description="Начать регистрацию")
-    ])
-    
-    logging.info("Starting bot...")
-    await asyncio.gather(
-        dp.start_polling(bot),
-        start_web_server()
-    )
+    await bot.set_my_commands([types.BotCommand(command="start", description="Запустить регистрацию")])
+    await asyncio.gather(dp.start_polling(bot), start_web_server())
 
 if __name__ == "__main__":
     try:
