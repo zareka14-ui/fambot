@@ -59,7 +59,7 @@ async def start_form(message: types.Message, state: FSMContext):
 @dp.message(Registration.waiting_for_name)
 async def process_name(message: types.Message, state: FSMContext):
     await state.update_data(name=message.text)
-    await message.answer("Напишите ваш **контакт для связи** (Ник в Telegram или номер WhatsApp).")
+    await message.answer("Напишите ваш **контакт для связи** (номер телефона).")
     await state.set_state(Registration.waiting_for_contact)
 
 @dp.message(Registration.waiting_for_contact)
@@ -135,4 +135,5 @@ if __name__ == "__main__":
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logging.info("Bot stopped!")
+
 
