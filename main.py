@@ -48,11 +48,11 @@ def get_progress(step):
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     welcome_text = (
-        "✨ **МИСТЕРИЯ «СИЛА РОДА»**\n"
+        "✨ **МИСТЕРИЯ «СТАЛЬ • СОЛЬ • ОГОНЬ • ШАМАН и МАГИЯ РОДА»**\n"
         "━━━━━━━━━━━━━━━━━━\n"
-        "Добро пожаловать в сакральное пространство. Чтобы подготовить ваш "
-        "индивидуальный набор артефактов, нам нужно познакомиться.\n\n"
-        "Нажмите кнопку ниже, чтобы начать."
+        "Добро пожаловать в сакральное пространство. Для нашей встречи я подготовлю "
+        "индивидуальный набор артефактов для каждого участника, для этого нам нужно познакомиться.\n\n"
+        "Нажмите кнопку ниже, чтобы начать регистрацию"
     )
     await message.answer(welcome_text, parse_mode="Markdown", reply_markup=get_start_kb())
 
@@ -151,7 +151,8 @@ async def process_payment_proof(message: types.Message, state: FSMContext):
             logging.error(f"Ошибка админа: {e}")
     
     await message.answer(
-        "✨ **БЛАГОДАРИМ!**\n\nВаша бронь принята. Мы свяжемся с вами в ближайшее время для подтверждения. "
+        "✨ **БЛАГОДАРИМ!**\n\nВаша бронь принята. Мы свяжемся с вами в ближайшее время для подтверждения и добавим в чат мероприятия. "
+        "Не забудьте взять с собой воду, плед и удобные вещи"
         "До встречи на мистерии!", 
         reply_markup=get_start_kb(), parse_mode="Markdown"
     )
@@ -180,3 +181,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logging.info("Bot stopped!")
+
