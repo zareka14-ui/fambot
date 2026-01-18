@@ -8,7 +8,7 @@ import json
 import base64
 from collections import defaultdict
 
-# Современные библиотеки Google
+# Библиотеки Google
 import gspread
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -64,16 +64,16 @@ async def upload_to_drive_and_save_row(data, photo_file_id):
         content_bytes = file_content_io.read()
 
         def _sync_logic(content):
-            # Извлекаем Base64 и превращаем в JSON
             encoded_key = os.getenv("GOOGLE_JSON_KEY", "").strip()
             decoded_key = base64.b64decode(encoded_key).decode('utf-8')
             key_data = json.loads(decoded_key)
             
-            # Настройка доступов (Новый способ через google-auth)
+            if "private_key" in key_data:
+                key_data["private_key"] = key_data["private_key"].replace("\\n", "\n")
+            
             SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
             creds = service_account.Credentials.from_service_account_info(key_data, scopes=SCOPES)
             
-            # 1. Загрузка на Google Drive
             drive_service = build('drive', 'v3', credentials=creds, cache_discovery=False)
             file_metadata = {
                 'name': f"Чек_{data['name']}_{datetime.datetime.now().strftime('%d_%m_%H%M')}.jpg",
@@ -82,7 +82,6 @@ async def upload_to_drive_and_save_row(data, photo_file_id):
             media = MediaIoBaseUpload(io.BytesIO(content), mimetype='image/jpeg', resumable=True)
             drive_file = drive_service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
             
-            # 2. Запись в Таблицу через gspread
             client = gspread.authorize(creds)
             sheet = client.open_by_key(SHEET_ID).sheet1
             
@@ -116,11 +115,11 @@ def get_times_kb():
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer("✨ МИСТЕРИЯ «СТАЛЬ • СОЛЬ • ОГОНЬ • ШАМАН и МАГИЯ РОДА»
+    await message.answer("✨ **✨ МИСТЕРИЯ «СТАЛЬ • СОЛЬ • ОГОНЬ • ШАМАН и МАГИЯ РОДА»**\n
 ━━━━━━━━━━━━━━━━━━
 Добро пожаловать в сакральное пространство. Для нашей встречи я подготовлю индивидуальный набор артефактов для каждого участника, для этого нам нужно познакомиться.
 
-Нажмите кнопку ниже, чтобы начать регистрацию", reply_markup=get_start_kb(), parse_mode="Markdown")
+Нажмите кнопку ниже, чтобы начать регистрацию?", reply_markup=get_start_kb(), parse_mode="Markdown")
 
 @dp.message(F.text == "🚀 Начать регистрацию")
 async def start_form(message: types.Message, state: FSMContext):
@@ -152,6 +151,7 @@ async def process_time(message: types.Message, state: FSMContext):
         await message.answer("Шаг 3: Выберите **дату**:", reply_markup=get_dates_kb())
         await state.set_state(Registration.waiting_for_date)
         return
+    if message.text not in TIMES_CONFIG: return
     await state.update_data(selected_time=message.text)
     await message.answer("Шаг 5: Есть ли **аллергия**? (Если нет — напишите «Нет»)", reply_markup=ReplyKeyboardRemove())
     await state.set_state(Registration.waiting_for_allergies)
@@ -164,12 +164,22 @@ async def process_allergies(message: types.Message, state: FSMContext):
         [InlineKeyboardButton(text="📜 Оферта", url=OFFER_LINK)],
         [InlineKeyboardButton(text="✅ Подтвердить", callback_data="confirm_ok")]
     ])
-    await message.answer(f"**ПРОВЕРЬТЕ ДАННЫЕ:**\n👤 {data['name']}\n📞 {data['contact']}\n🗓 {data['selected_date']} {data['selected_time']}", reply_markup=kb, parse_mode="Markdown")
+    await message.answer(
+        f"**ПРОВЕРЬТЕ ДАННЫЕ:**\n"
+        f"👤 {data['name']}\n"
+        f"📞 {data['contact']}\n"
+        f"🗓 {data['selected_date']} в {data['selected_time']}\n"
+        f"⚠️ Аллергии: {data['allergies']}", 
+        reply_markup=kb, parse_mode="Markdown"
+    )
     await state.set_state(Registration.confirm_data)
 
 @dp.callback_query(F.data == "confirm_ok")
 async def process_confirm(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("✅ Пришлите скриншот чека (**2999 р.**)\nРеквизиты: `+79124591439` Екатерина Б.")
+    await callback.message.edit_text(
+        "✅ Пришлите скриншот чека (**2999 р.**)\n"
+        "Реквизиты: `+79124591439` Екатерина Б."
+    )
     await state.set_state(Registration.waiting_for_payment_proof)
 
 @dp.message(Registration.waiting_for_payment_proof, F.photo)
@@ -184,22 +194,23 @@ async def process_payment_proof(message: types.Message, state: FSMContext):
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"👤 **ФИО:** {data.get('name')}\n"
                 f"📞 **Связь:** {data.get('contact')}\n"
-                f"🗓 **Дата/Время:** {data.get('selected_date')} в {data.get('selected_time')}\n"
+                f"🗓 **Дата/Время:** {data.get('selected_date')} {data.get('selected_time')}\n"
                 f"⚠️ **Аллергии:** {data.get('allergies')}\n"
-                f"🆔 ID: {message.from_user.id}\n"
+                f"🆔 ID: `{message.from_user.id}`\n"
                 f"👤 Профиль: {message.from_user.full_name}"
             )
             await bot.send_message(ADMIN_ID, report, parse_mode="Markdown")
             await message.copy_to(ADMIN_ID)
         except Exception as e:
-            logging.error(f"Admin notify error: {e}")
+            logging.error(f"Ошибка уведомления админа: {e}")
 
-    wait_msg = await message.answer("⌛ Секунду, сохраняю данные в реестр...")
+    wait_msg = await message.answer("⌛ Сохраняю данные в таблицу...")
     success = await upload_to_drive_and_save_row(data, message.photo[-1].file_id)
     
     if success:
-        await wait_msg.edit_text("✨ **БЛАГОДАРИМ!**\nВаша бронь подтверждена и внесена в таблицу. До встречи!")
+        await wait_msg.edit_text("✨ **БЛАГОДАРИМ!**\nВаша бронь подтверждена. До встречи на мистерии!")
     else:
+        # Даже если таблица упала, клиент не должен паниковать
         await wait_msg.edit_text("✨ **БЛАГОДАРИМ!**\nВаша бронь принята организатором. До встречи!")
     
     await state.clear()
@@ -216,4 +227,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
