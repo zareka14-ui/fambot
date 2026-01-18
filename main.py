@@ -6,7 +6,6 @@ import datetime
 import io
 import json
 import base64
-from collections import defaultdict
 
 # Библиотеки Google
 import gspread
@@ -39,12 +38,19 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
+# Конфигурация дат и соответствующего времени
 DATES_CONFIG = {
-    "📅 21 янв (ср) | 📍 Нагаево": "21 января (ср) - Иглино",
+    "📅 21 янв (ср) | 📍 Нагаево": "21 января (ср) - Нагаево",
     "📅 23 янв (пт) | 📍 Бакалинская 25": "23 января (пт) - Бакалинская 25",
     "📅 25 янв (вс) | 📍 Бакалинская 25": "25 января (вс) - Бакалинская 25"
 }
-TIMES_CONFIG = ["🕙 10:00", "🕖 19:00"]
+
+# Словарь с доступным временем для каждой даты
+TIMES_BY_DATE = {
+    "📅 21 янв (ср) | 📍 Нагаево": ["🕙 20:00"],
+    "📅 23 янв (пт) | 📍 Бакалинская 25": ["🕙 10:00", "🕖 19:00"],
+    "📅 25 янв (вс) | 📍 Бакалинская 25": ["🕙 10:00", "🕖 19:00"]
+}
 
 class Registration(StatesGroup):
     waiting_for_name = State()
@@ -107,8 +113,10 @@ def get_start_kb():
 def get_dates_kb():
     return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=d)] for d in DATES_CONFIG.keys()], resize_keyboard=True)
 
-def get_times_kb():
-    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=t)] for t in TIMES_CONFIG] + [[KeyboardButton(text="⬅️ Назад к датам")]], resize_keyboard=True)
+def get_times_kb(times_list):
+    buttons = [[KeyboardButton(text=t)] for t in times_list]
+    buttons.append([KeyboardButton(text="⬅️ Назад к датам")])
+    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
 # --- ХЭНДЛЕРЫ ---
 
@@ -142,9 +150,19 @@ async def process_contact(message: types.Message, state: FSMContext):
 
 @dp.message(Registration.waiting_for_date, F.text)
 async def process_date(message: types.Message, state: FSMContext):
-    if message.text not in DATES_CONFIG: return
+    if message.text not in DATES_CONFIG:
+        return
+    
     await state.update_data(selected_date=message.text)
-    await message.answer("Шаг 4: Выберите удобное **время**:", reply_markup=get_times_kb())
+    
+    # Динамически получаем список времени для выбранной даты
+    available_times = TIMES_BY_DATE.get(message.text, [])
+    
+    await message.answer(
+        "Шаг 4: Выберите удобное **время**:", 
+        reply_markup=get_times_kb(available_times),
+        parse_mode="Markdown"
+    )
     await state.set_state(Registration.waiting_for_time)
 
 @dp.message(Registration.waiting_for_time, F.text)
@@ -153,7 +171,14 @@ async def process_time(message: types.Message, state: FSMContext):
         await message.answer("Шаг 3: Выберите **дату**:", reply_markup=get_dates_kb())
         await state.set_state(Registration.waiting_for_date)
         return
-    if message.text not in TIMES_CONFIG: return
+    
+    user_data = await state.get_data()
+    selected_date = user_data.get('selected_date')
+    valid_times = TIMES_BY_DATE.get(selected_date, [])
+
+    if message.text not in valid_times:
+        return
+
     await state.update_data(selected_time=message.text)
     await message.answer("Шаг 5: Есть ли у вас **аллергия** на травы или эфирные масла? (Если нет — напишите «Нет»)", reply_markup=ReplyKeyboardRemove())
     await state.set_state(Registration.waiting_for_allergies)
@@ -182,7 +207,7 @@ async def process_confirm(callback: types.CallbackQuery, state: FSMContext):
     payment_text = (
         "✅ **ПОЧТИ ГОТОВО**\n"
         "Для завершения бронирования необходимо оплатить участие (**2999 р.**) и прислать скриншот чека.\n\n"
-        "📍 **Реквизиты:** `+79124591439` (Сбер/Т-Банк)\n"
+        "📍 **Реквизиты:** `+79124591439` (Сбер/Т-Банк)\n Назначение платежа укажите "Благотворительный взнос""
         "👤 Екатерина Б."
     )
     await callback.message.edit_text(payment_text, parse_mode="Markdown")
@@ -192,7 +217,7 @@ async def process_confirm(callback: types.CallbackQuery, state: FSMContext):
 async def process_payment_proof(message: types.Message, state: FSMContext):
     data = await state.get_data()
     
-    # 1. Сначала уведомляем Вас
+    # 1. Уведомление админу
     if ADMIN_ID:
         try:
             report = (
@@ -203,7 +228,6 @@ async def process_payment_proof(message: types.Message, state: FSMContext):
                 f"🗓 **Дата/Время:** {data.get('selected_date')} {data.get('selected_time')}\n"
                 f"⚠️ **Аллергии:** {data.get('allergies')}\n"
                 f"🆔 ID: `{message.from_user.id}`\n"
-                f"👤 Профиль: {message.from_user.full_name}"
             )
             await bot.send_message(ADMIN_ID, report, parse_mode="Markdown")
             await message.copy_to(ADMIN_ID)
@@ -215,7 +239,8 @@ async def process_payment_proof(message: types.Message, state: FSMContext):
     success = await upload_to_drive_and_save_row(data, message.photo[-1].file_id)
     
     # 3. Финальный ответ
-    final_text = "✨ **БЛАГОДАРИМ!**\nВаша бронь подтверждена. Я подготовлю всё необходимое к нашей встрече. До встречи на мистерии!"
+    final_text = "✨ **БЛАГОДАРИМ!**\nВаша бронь подтверждена. Я подготовлю всё необходимое к нашей встрече. Не забудьте взять с собой удобную одежду, теплые носки и плед. 
+По желанию что-то к чаю.До встречи на Мистерии ✨"
     await wait_msg.edit_text(final_text)
     await state.clear()
 
@@ -231,5 +256,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
