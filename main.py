@@ -76,7 +76,7 @@ async def upload_to_drive_and_save_row(data, photo_file_id):
             
             drive_service = build('drive', 'v3', credentials=creds, cache_discovery=False)
             file_metadata = {
-                'name': f"Чек_{data['name']}_{datetime.datetime.now().strftime('%d_%m_%H%M')}.jpg",
+                'name': f"Чек_{data['name']}_{datetime.datetime.now().strftime('%d_%m')}.jpg",
                 'parents': [DRIVE_FOLDER_ID]
             }
             media = MediaIoBaseUpload(io.BytesIO(content), mimetype='image/jpeg', resumable=True)
@@ -115,11 +115,13 @@ def get_times_kb():
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer("✨ **✨ МИСТЕРИЯ «СТАЛЬ • СОЛЬ • ОГОНЬ • ШАМАН и МАГИЯ РОДА»**\n
-━━━━━━━━━━━━━━━━━━
-Добро пожаловать в сакральное пространство. Для нашей встречи я подготовлю индивидуальный набор артефактов для каждого участника, для этого нам нужно познакомиться.
-
-Нажмите кнопку ниже, чтобы начать регистрацию?", reply_markup=get_start_kb(), parse_mode="Markdown")
+    welcome_text = (
+        "✨ **МИСТЕРИЯ «СТАЛЬ • СОЛЬ • ОГОНЬ • ШАМАН и МАГИЯ РОДА»**\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "Добро пожаловать в сакральное пространство. Для нашей встречи я подготовлю индивидуальный набор артефактов для каждого участника, для этого нам нужно познакомиться.\n\n"
+        "Нажмите кнопку ниже, чтобы начать регистрацию"
+    )
+    await message.answer(welcome_text, reply_markup=get_start_kb(), parse_mode="Markdown")
 
 @dp.message(F.text == "🚀 Начать регистрацию")
 async def start_form(message: types.Message, state: FSMContext):
@@ -129,20 +131,20 @@ async def start_form(message: types.Message, state: FSMContext):
 @dp.message(Registration.waiting_for_name, F.text)
 async def process_name(message: types.Message, state: FSMContext):
     await state.update_data(name=message.text)
-    await message.answer("Шаг 2: Ваш **номер телефона** или @username:")
+    await message.answer("Шаг 2: Ваш **номер телефона** или @username для связи:")
     await state.set_state(Registration.waiting_for_contact)
 
 @dp.message(Registration.waiting_for_contact, F.text)
 async def process_contact(message: types.Message, state: FSMContext):
     await state.update_data(contact=message.text)
-    await message.answer("Шаг 3: Выберите **дату**:", reply_markup=get_dates_kb())
+    await message.answer("Шаг 3: Выберите **дату** нашей встречи:", reply_markup=get_dates_kb())
     await state.set_state(Registration.waiting_for_date)
 
 @dp.message(Registration.waiting_for_date, F.text)
 async def process_date(message: types.Message, state: FSMContext):
     if message.text not in DATES_CONFIG: return
     await state.update_data(selected_date=message.text)
-    await message.answer("Шаг 4: Выберите **время**:", reply_markup=get_times_kb())
+    await message.answer("Шаг 4: Выберите удобное **время**:", reply_markup=get_times_kb())
     await state.set_state(Registration.waiting_for_time)
 
 @dp.message(Registration.waiting_for_time, F.text)
@@ -153,7 +155,7 @@ async def process_time(message: types.Message, state: FSMContext):
         return
     if message.text not in TIMES_CONFIG: return
     await state.update_data(selected_time=message.text)
-    await message.answer("Шаг 5: Есть ли **аллергия**? (Если нет — напишите «Нет»)", reply_markup=ReplyKeyboardRemove())
+    await message.answer("Шаг 5: Есть ли у вас **аллергия** на травы или эфирные масла? (Если нет — напишите «Нет»)", reply_markup=ReplyKeyboardRemove())
     await state.set_state(Registration.waiting_for_allergies)
 
 @dp.message(Registration.waiting_for_allergies, F.text)
@@ -161,32 +163,36 @@ async def process_allergies(message: types.Message, state: FSMContext):
     await state.update_data(allergies=message.text)
     data = await state.get_data()
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📜 Оферта", url=OFFER_LINK)],
-        [InlineKeyboardButton(text="✅ Подтвердить", callback_data="confirm_ok")]
+        [InlineKeyboardButton(text="📜 Прочитать оферту", url=OFFER_LINK)],
+        [InlineKeyboardButton(text="✅ Все верно", callback_data="confirm_ok")]
     ])
-    await message.answer(
-        f"**ПРОВЕРЬТЕ ДАННЫЕ:**\n"
-        f"👤 {data['name']}\n"
-        f"📞 {data['contact']}\n"
-        f"🗓 {data['selected_date']} в {data['selected_time']}\n"
-        f"⚠️ Аллергии: {data['allergies']}", 
-        reply_markup=kb, parse_mode="Markdown"
+    summary = (
+        f"**ПРОВЕРЬТЕ ВАШИ ДАННЫЕ:**\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"👤 **ФИО:** {data['name']}\n"
+        f"📞 **Связь:** {data['contact']}\n"
+        f"🗓 **Запись:** {data['selected_date']} в {data['selected_time']}\n"
+        f"⚠️ **Аллергии:** {data['allergies']}"
     )
+    await message.answer(summary, reply_markup=kb, parse_mode="Markdown")
     await state.set_state(Registration.confirm_data)
 
 @dp.callback_query(F.data == "confirm_ok")
 async def process_confirm(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.edit_text(
-        "✅ Пришлите скриншот чека (**2999 р.**)\n"
-        "Реквизиты: `+79124591439` Екатерина Б."
+    payment_text = (
+        "✅ **ПОЧТИ ГОТОВО**\n"
+        "Для завершения бронирования необходимо оплатить участие (**2999 р.**) и прислать скриншот чека.\n\n"
+        "📍 **Реквизиты:** `+79124591439` (Сбер/Т-Банк)\n"
+        "👤 Екатерина Б."
     )
+    await callback.message.edit_text(payment_text, parse_mode="Markdown")
     await state.set_state(Registration.waiting_for_payment_proof)
 
 @dp.message(Registration.waiting_for_payment_proof, F.photo)
 async def process_payment_proof(message: types.Message, state: FSMContext):
     data = await state.get_data()
     
-    # Сначала отчет Вам (Админу)
+    # 1. Сначала уведомляем Вас
     if ADMIN_ID:
         try:
             report = (
@@ -204,18 +210,16 @@ async def process_payment_proof(message: types.Message, state: FSMContext):
         except Exception as e:
             logging.error(f"Ошибка уведомления админа: {e}")
 
-    wait_msg = await message.answer("⌛ Сохраняю данные в таблицу...")
+    # 2. Обработка Google
+    wait_msg = await message.answer("⌛ Сохраняю ваше место в сакральном списке...")
     success = await upload_to_drive_and_save_row(data, message.photo[-1].file_id)
     
-    if success:
-        await wait_msg.edit_text("✨ **БЛАГОДАРИМ!**\nВаша бронь подтверждена. До встречи на мистерии!")
-    else:
-        # Даже если таблица упала, клиент не должен паниковать
-        await wait_msg.edit_text("✨ **БЛАГОДАРИМ!**\nВаша бронь принята организатором. До встречи!")
-    
+    # 3. Финальный ответ
+    final_text = "✨ **БЛАГОДАРИМ!**\nВаша бронь подтверждена. Я подготовлю всё необходимое к нашей встрече. До встречи на мистерии!"
+    await wait_msg.edit_text(final_text)
     await state.clear()
 
-# --- SERVER ---
+# --- WEB SERVER ---
 async def handle(request): return web.Response(text="OK")
 
 async def main():
