@@ -5,16 +5,16 @@ import sys
 import datetime
 import io
 import json
-import base64  # Добавлено для работы с кодировкой
+import base64
 from collections import defaultdict
 
-# Библиотеки Google
+# Современные библиотеки Google
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
-# Aiogram
+# Aiogram 3.x
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -32,9 +32,8 @@ ADMIN_ID = os.getenv("ADMIN_ID")
 PORT = int(os.getenv("PORT", 8080))
 
 OFFER_LINK = "https://disk.yandex.ru/i/965-_UGNIPkaaQ"
-MAX_PEOPLE_PER_SLOT = 15
 DRIVE_FOLDER_ID = "1aPzxYWdh085ZjQnr2KXs3O_HMCCWpfhn"
-SHEET_NAME = "Запись на Мистерию"
+SHEET_ID = "19vNVslHJEnkZCumR9e_sSc4M-YtqFWj6cLIwxojEZY0" 
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
@@ -65,23 +64,16 @@ async def upload_to_drive_and_save_row(data, photo_file_id):
         content_bytes = file_content_io.read()
 
         def _sync_logic(content):
-            # 1. Получаем Base64 строку из переменной окружения
+            # Извлекаем Base64 и превращаем в JSON
             encoded_key = os.getenv("GOOGLE_JSON_KEY", "").strip()
-            if not encoded_key:
-                raise ValueError("GOOGLE_JSON_KEY is empty")
+            decoded_key = base64.b64decode(encoded_key).decode('utf-8')
+            key_data = json.loads(decoded_key)
             
-            # 2. Декодируем Base64 обратно в JSON-словарь
-            decoded_bytes = base64.b64decode(encoded_key)
-            key_data = json.loads(decoded_bytes.decode('utf-8'))
+            # Настройка доступов (Новый способ через google-auth)
+            SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+            creds = service_account.Credentials.from_service_account_info(key_data, scopes=SCOPES)
             
-            # 3. Принудительно исправляем переносы строк (на всякий случай)
-            if "private_key" in key_data:
-                key_data["private_key"] = key_data["private_key"].replace("\\n", "\n")
-            
-            scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-            creds = ServiceAccountCredentials.from_json_keyfile_dict(key_data, scope)
-            
-            # Drive API
+            # 1. Загрузка на Google Drive
             drive_service = build('drive', 'v3', credentials=creds, cache_discovery=False)
             file_metadata = {
                 'name': f"Чек_{data['name']}_{datetime.datetime.now().strftime('%d_%m_%H%M')}.jpg",
@@ -90,9 +82,10 @@ async def upload_to_drive_and_save_row(data, photo_file_id):
             media = MediaIoBaseUpload(io.BytesIO(content), mimetype='image/jpeg', resumable=True)
             drive_file = drive_service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
             
-            # Sheets API
+            # 2. Запись в Таблицу через gspread
             client = gspread.authorize(creds)
-            sheet = client.open(SHEET_NAME).sheet1
+            sheet = client.open_by_key(SHEET_ID).sheet1
+            
             row = [
                 datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 data.get('name'), data.get('contact'),
@@ -155,7 +148,6 @@ async def process_time(message: types.Message, state: FSMContext):
         await message.answer("Шаг 3: Выберите **дату**:", reply_markup=get_dates_kb())
         await state.set_state(Registration.waiting_for_date)
         return
-    if message.text not in TIMES_CONFIG: return
     await state.update_data(selected_time=message.text)
     await message.answer("Шаг 5: Есть ли **аллергия**? (Если нет — напишите «Нет»)", reply_markup=ReplyKeyboardRemove())
     await state.set_state(Registration.waiting_for_allergies)
@@ -198,13 +190,14 @@ async def process_payment_proof(message: types.Message, state: FSMContext):
         except Exception as e:
             logging.error(f"Admin notify error: {e}")
 
-    wait_msg = await message.answer("⌛ Секунду, сохраняю данные...")
-    
-    # Пробуем записать в Google
+    wait_msg = await message.answer("⌛ Секунду, сохраняю данные в реестр...")
     success = await upload_to_drive_and_save_row(data, message.photo[-1].file_id)
     
-    # Финальный ответ клиенту
-    await wait_msg.edit_text("✨ **БЛАГОДАРИМ!**\nВаша бронь подтверждена. До встречи на мистерии!")
+    if success:
+        await wait_msg.edit_text("✨ **БЛАГОДАРИМ!**\nВаша бронь подтверждена и внесена в таблицу. До встречи!")
+    else:
+        await wait_msg.edit_text("✨ **БЛАГОДАРИМ!**\nВаша бронь принята организатором. До встречи!")
+    
     await state.clear()
 
 # --- SERVER ---
