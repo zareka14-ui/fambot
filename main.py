@@ -35,7 +35,6 @@ MAX_PEOPLE_PER_SLOT = 15
 DRIVE_FOLDER_ID = "1aPzxYWdh085ZjQnr2KXs3O_HMCCWpfhn"
 SHEET_NAME = "Запись на Мистерию"
 
-# Временное хранилище (сбрасывается при перезагрузке Render)
 BOOKED_SLOTS = defaultdict(int)
 
 class Registration(StatesGroup):
@@ -72,12 +71,13 @@ async def upload_to_drive_and_save_row(data, photo_file_id):
                 raise ValueError("GOOGLE_JSON_KEY is empty")
             
             key_data = json.loads(env_key)
-            scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+            # Критическое исправление для Render: замена двойных слешей в ключе
+            if "private_key" in key_data:
+                key_data["private_key"] = key_data["private_key"].replace("\\n", "\n")
             
-            # ИСПРАВЛЕННЫЙ МЕТОД НИЖЕ
+            scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
             creds = ServiceAccountCredentials.from_json_keyfile_dict(key_data, scope)
             
-            # Drive API
             drive_service = build('drive', 'v3', credentials=creds, cache_discovery=False)
             file_metadata = {
                 'name': f"Чек_{data['name']}_{datetime.datetime.now().strftime('%d_%m_%H%M')}.jpg",
@@ -86,7 +86,6 @@ async def upload_to_drive_and_save_row(data, photo_file_id):
             media = MediaIoBaseUpload(io.BytesIO(content), mimetype='image/jpeg', resumable=True)
             drive_file = drive_service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
             
-            # Sheets API
             client = gspread.authorize(creds)
             sheet = client.open(SHEET_NAME).sheet1
             row = [
@@ -100,7 +99,7 @@ async def upload_to_drive_and_save_row(data, photo_file_id):
 
         return await asyncio.to_thread(_sync_logic, content_bytes)
     except Exception as e:
-        logging.error(f"Критическая ошибка Google Services: {e}")
+        logging.error(f"Ошибка Google Services: {e}")
         return False
 
 # --- КЛАВИАТУРЫ ---
@@ -151,8 +150,10 @@ async def process_time(message: types.Message, state: FSMContext):
         await message.answer("Шаг 3: Выберите **дату**:", reply_markup=get_dates_kb())
         await state.set_state(Registration.waiting_for_date)
         return
+    if message.text not in TIMES_CONFIG: return
     await state.update_data(selected_time=message.text)
-    await message.answer("Шаг 5: Есть ли **аллергия**? (Если нет — напишите «Нет»)")
+    # Кнопки исчезают здесь
+    await message.answer("Шаг 5: Есть ли **аллергия**? (Если нет — напишите «Нет»)", reply_markup=ReplyKeyboardRemove())
     await state.set_state(Registration.waiting_for_allergies)
 
 @dp.message(Registration.waiting_for_allergies, F.text)
@@ -175,24 +176,30 @@ async def process_confirm(callback: types.CallbackQuery, state: FSMContext):
 async def process_payment_proof(message: types.Message, state: FSMContext):
     data = await state.get_data()
     
-    # Сначала Вам в личку
+    # Сначала отчет Вам
     if ADMIN_ID:
         try:
-            report = f"🔥 **НОВАЯ ОПЛАТА**\n👤 {data.get('name')}\n📞 {data.get('contact')}\n🗓 {data.get('selected_date')} {data.get('selected_time')}"
-            await bot.send_message(ADMIN_ID, report)
+            report = (
+                f"**НОВАЯ ЗАЯВКА НА МИСТЕРИЮ**\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"👤 **ФИО:** {data.get('name')}\n"
+                f"📞 **Связь:** {data.get('contact')}\n"
+                f"🗓 **Дата/Время:** {data.get('selected_date')} в {data.get('selected_time')}\n"
+                f"⚠️ **Аллергии:** {data.get('allergies')}\n"
+                f"🆔 ID: {message.from_user.id}\n"
+                f"👤 Профиль: {message.from_user.full_name}"
+            )
+            await bot.send_message(ADMIN_ID, report, parse_mode="Markdown")
             await message.copy_to(ADMIN_ID)
         except Exception as e:
             logging.error(f"Admin notify error: {e}")
 
-    wait_msg = await message.answer("⌛ Секунду, завершаю регистрацию...")
-    
-    # Пытаемся в Google
+    wait_msg = await message.answer("⌛ Секунду, сохраняю данные...")
     success = await upload_to_drive_and_save_row(data, message.photo[-1].file_id)
     
     await wait_msg.edit_text("✨ **БЛАГОДАРИМ!**\nВаша бронь подтверждена. До встречи!")
     await state.clear()
 
-# --- SERVER ---
 async def handle(request): return web.Response(text="OK")
 
 async def main():
