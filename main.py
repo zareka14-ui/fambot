@@ -131,7 +131,7 @@ async def start_form(message: types.Message, state: FSMContext):
 @dp.message(Registration.waiting_for_name, F.text)
 async def process_name(message: types.Message, state: FSMContext):
     await state.update_data(name=message.text)
-    await message.answer("Шаг 2: Ваш **номер телефона** или @username для связи:")
+    await message.answer("Шаг 2: Ваш **номер телефона** или @username для связи и добавления в закрытый чат мероприятия:")
     await state.set_state(Registration.waiting_for_contact)
 
 @dp.message(Registration.waiting_for_contact, F.text)
@@ -231,4 +231,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
