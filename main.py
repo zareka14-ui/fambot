@@ -4,6 +4,7 @@ import os
 import sys
 import re
 import datetime
+import io
 from collections import defaultdict
 
 # Библиотеки Google
@@ -12,11 +13,16 @@ from oauth2client.service_account import ServiceAccountCredentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
+# Aiogram
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
+from aiogram.types import (
+    ReplyKeyboardMarkup, KeyboardButton, 
+    InlineKeyboardMarkup, InlineKeyboardButton, 
+    ReplyKeyboardRemove
+)
 from aiohttp import web
 
 # --- КОНФИГУРАЦИЯ ---
@@ -30,9 +36,9 @@ MAX_PEOPLE_PER_SLOT = 15
 # --- НАСТРОЙКИ GOOGLE ---
 SHEET_NAME = "Запись на Мистерию"
 GOOGLE_CREDENTIALS_FILE = "google_sheet_key.json"
-DRIVE_FOLDER_ID = "1aPzxYWdh085ZjQnr2KXs3O_HMCCWpfhn" # Ваш ID папки внесен
+DRIVE_FOLDER_ID = "1aPzxYWdh085ZjQnr2KXs3O_HMCCWpfhn" 
 
-# Хранилище занятых мест (в оперативной памяти)
+# Хранилище занятых мест (ВНИМАНИЕ: сбрасывается при перезагрузке на Render)
 BOOKED_SLOTS = defaultdict(int)
 
 class Registration(StatesGroup):
@@ -56,64 +62,64 @@ DATES_CONFIG = {
 }
 TIMES_CONFIG = ["🕙 10:00", "🕖 19:00"]
 
-# --- ФУНКЦИИ GOOGLE ---
+# --- ФУНКЦИИ GOOGLE (ИСПРАВЛЕНЫ) ---
 
 async def upload_to_drive_and_save_row(data, photo_file_id):
-    """Скачивает фото, загружает на Диск и делает запись в таблицу"""
-    def _logic():
-        try:
+    """Безопасная загрузка файла и запись в таблицу без ошибок Event Loop"""
+    try:
+        # 1. Асинхронно скачиваем файл из Телеграм
+        file_info = await bot.get_file(photo_file_id)
+        file_content_io = await bot.download_file(file_info.file_path)
+        
+        # Читаем содержимое в байты, чтобы передать в поток
+        content_bytes = file_content_io.read()
+
+        def _sync_logic(content):
+            # Внутренняя синхронная логика для выполнения в asyncio.to_thread
             scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
             creds = ServiceAccountCredentials.from_json_keyfile_name(GOOGLE_CREDENTIALS_FILE, scope)
             
-            # 1. Загрузка файла на Google Drive
-            drive_service = build('drive', 'v3', credentials=creds)
-            
-            # Получаем файл из Telegram
-            file_info = asyncio.run_coroutine_threadsafe(bot.get_file(photo_file_id), asyncio.get_event_loop()).result()
-            file_content = asyncio.run_coroutine_threadsafe(bot.download_file(file_info.file_path), asyncio.get_event_loop()).result()
-            
+            # Загрузка на Google Drive
+            drive_service = build('drive', 'v3', credentials=creds, cache_discovery=False)
             file_metadata = {
                 'name': f"Чек_{data['name']}_{datetime.datetime.now().strftime('%d_%m_%H%M')}.jpg",
                 'parents': [DRIVE_FOLDER_ID]
             }
-            media = MediaIoBaseUpload(file_content, mimetype='image/jpeg')
+            # Создаем поток из байтов
+            media = MediaIoBaseUpload(io.BytesIO(content), mimetype='image/jpeg', resumable=True)
             drive_file = drive_service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
-            file_link = drive_file.get('webViewLink')
-
-            # 2. Запись в Таблицу
+            
+            # Запись в Google Таблицу
             client = gspread.authorize(creds)
             sheet = client.open(SHEET_NAME).sheet1
-            
             row = [
                 datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                data.get('name'),
-                data.get('contact'),
-                data.get('selected_date'),
-                data.get('selected_time'),
-                data.get('allergies'),
-                file_link # Ссылка на чек
+                data.get('name'), data.get('contact'),
+                data.get('selected_date'), data.get('selected_time'),
+                data.get('allergies'), drive_file.get('webViewLink')
             ]
             sheet.append_row(row)
             return True
-        except Exception as e:
-            logging.error(f"Ошибка Google Services: {e}")
-            return False
 
-    return await asyncio.to_thread(_logic)
+        # Запускаем синхронную часть в отдельном потоке
+        return await asyncio.to_thread(_sync_logic, content_bytes)
+    except Exception as e:
+        logging.error(f"Ошибка Google Services: {e}")
+        return False
 
-# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ КЛАВИАТУР ---
+# --- КЛАВИАТУРЫ ---
 
 def get_start_kb():
     return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🚀 Начать регистрацию")]], resize_keyboard=True)
 
 def get_dates_kb():
     buttons = [[KeyboardButton(text=d)] for d in DATES_CONFIG.keys()]
-    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True, one_time_keyboard=True)
 
 def get_times_kb():
     buttons = [[KeyboardButton(text=t)] for t in TIMES_CONFIG]
     buttons.append([KeyboardButton(text="⬅️ Назад к датам")])
-    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True, one_time_keyboard=True)
 
 def get_progress(step):
     total = 6
@@ -135,26 +141,30 @@ async def cmd_start(message: types.Message, state: FSMContext):
 
 @dp.message(F.text == "🚀 Начать регистрацию")
 async def start_form(message: types.Message, state: FSMContext):
-    await message.answer(f"{get_progress(0)}\n**Шаг 1:** Введите ваше **ФИО**:", reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
+    await message.answer(f"{get_progress(0)}\n**Шаг 1:** Введите ваше **ФИО** полностью:", reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
     await state.set_state(Registration.waiting_for_name)
 
 @dp.message(Registration.waiting_for_name, F.text)
 async def process_name(message: types.Message, state: FSMContext):
     await state.update_data(name=message.text)
-    await message.answer(f"{get_progress(1)}\n**Шаг 2:** Ваш **номер телефона** или @username:", parse_mode="Markdown")
+    await message.answer(f"{get_progress(1)}\n**Шаг 2:** Напишите ваш **номер телефона** или @username:", parse_mode="Markdown")
     await state.set_state(Registration.waiting_for_contact)
 
 @dp.message(Registration.waiting_for_contact, F.text)
 async def process_contact(message: types.Message, state: FSMContext):
     await state.update_data(contact=message.text)
-    await message.answer(f"{get_progress(2)}\n**Шаг 3:** Выберите **дату и место**:", reply_markup=get_dates_kb(), parse_mode="Markdown")
+    # ПЕРЕХОД К ДАТАМ
+    await message.answer(f"{get_progress(2)}\n**Шаг 3:** Выберите **дату и место** проведения:", reply_markup=get_dates_kb(), parse_mode="Markdown")
     await state.set_state(Registration.waiting_for_date)
 
 @dp.message(Registration.waiting_for_date, F.text)
 async def process_date(message: types.Message, state: FSMContext):
-    if message.text not in DATES_CONFIG: return
+    if message.text not in DATES_CONFIG:
+        await message.answer("Пожалуйста, используйте кнопки для выбора даты.")
+        return
     await state.update_data(selected_date=message.text)
-    await message.answer(f"{get_progress(3)}\n**Шаг 4:** Выберите **время**:", reply_markup=get_times_kb(), parse_mode="Markdown")
+    # ПЕРЕХОД К ВРЕМЕНИ
+    await message.answer(f"{get_progress(3)}\n**Шаг 4:** Выберите удобное **время**:", reply_markup=get_times_kb(), parse_mode="Markdown")
     await state.set_state(Registration.waiting_for_time)
 
 @dp.message(Registration.waiting_for_time, F.text)
@@ -163,15 +173,22 @@ async def process_time(message: types.Message, state: FSMContext):
         await message.answer("Выберите дату:", reply_markup=get_dates_kb())
         await state.set_state(Registration.waiting_for_date)
         return
+    if message.text not in TIMES_CONFIG:
+        await message.answer("Пожалуйста, используйте кнопки для выбора времени.")
+        return
     
     data = await state.get_data()
     slot_id = f"{data['selected_date']}_{message.text}"
     if BOOKED_SLOTS[slot_id] >= MAX_PEOPLE_PER_SLOT:
-        await message.answer("😔 На это время мест нет. Выберите другое.")
+        await message.answer("😔 К сожалению, на это время мест нет. Выберите другое время или дату.")
         return
 
     await state.update_data(selected_time=message.text)
-    await message.answer(f"{get_progress(4)}\n**Шаг 5:** Есть ли **аллергия**? (Если нет — напишите «Нет»)", reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
+    # ПЕРЕХОД К АЛЛЕРГИИ
+    await message.answer(
+        f"{get_progress(4)}\n**Шаг 5:** Есть ли у вас **аллергия**?\n(Масла, травы, металлы). Если нет — напишите «Нет».", 
+        reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown"
+    )
     await state.set_state(Registration.waiting_for_allergies)
 
 @dp.message(Registration.waiting_for_allergies, F.text)
@@ -179,57 +196,93 @@ async def process_allergies(message: types.Message, state: FSMContext):
     await state.update_data(allergies=message.text)
     data = await state.get_data()
     summary = (
-        f"{get_progress(5)}\n**ПРОВЕРЬТЕ ДАННЫЕ:**\n"
-        f"👤 {data['name']}\n📞 {data['contact']}\n🗓 {data['selected_date']}\n⏰ {data['selected_time']}\n⚠️ {data['allergies']}"
+        f"{get_progress(5)}\n**ПРОВЕРЬТЕ ВАШИ ДАННЫЕ:**\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"👤 **ФИО:** {data['name']}\n"
+        f"📞 **Связь:** {data['contact']}\n"
+        f"🗓 **Дата:** {data['selected_date']}\n"
+        f"⏰ **Время:** {data['selected_time']}\n"
+        f"⚠️ **Аллергии:** {data['allergies']}\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "Если всё верно — подтвердите оферту."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📜 Оферта", url=OFFER_LINK)],
-        [InlineKeyboardButton(text="✅ Подтвердить", callback_data="confirm_ok")],
-        [InlineKeyboardButton(text="❌ Заново", callback_data="restart")]
+        [InlineKeyboardButton(text="📜 Читать оферту", url=OFFER_LINK)],
+        [InlineKeyboardButton(text="✅ Все верно, согласен", callback_data="confirm_ok")],
+        [InlineKeyboardButton(text="❌ Заполнить заново", callback_data="restart")]
     ])
     await message.answer(summary, reply_markup=kb, parse_mode="Markdown")
     await state.set_state(Registration.confirm_data)
 
+@dp.callback_query(F.data == "restart")
+async def restart_form(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await start_form(callback.message, state)
+
 @dp.callback_query(F.data == "confirm_ok")
-async def confirm_ok(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.edit_text(
-        "✅ **ДАННЫЕ ПРИНЯТЫ**\n\nПереведите депозит **2999 руб.**\n`+79124591439` (Сбер/Т-Банк, Екатерина Б.)\n"
-        "📎 **Пришлите скриншот чека сюда.**", parse_mode="Markdown"
+async def process_confirm(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    pay_text = (
+        "✅ **ДАННЫЕ ПРИНЯТЫ**\n\n"
+        "Для бронирования места переведите депозит **2999 руб.**\n\n"
+        "📌 **Реквизиты:**\n"
+        "`+79124591439` (Сбер / Т-Банк)\n"
+        "👤 Получатель: Екатерина Б.\n\n"
+        "📎 **После оплаты пришлите скриншот чека сюда.**"
     )
+    await callback.message.edit_text(pay_text, parse_mode="Markdown")
     await state.set_state(Registration.waiting_for_payment_proof)
 
 @dp.message(Registration.waiting_for_payment_proof, F.photo)
-async def process_payment(message: types.Message, state: FSMContext):
+async def process_payment_proof(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    wait_msg = await message.answer("⌛ Сохраняю данные и чек в базу...")
+    wait_msg = await message.answer("⌛ Сохраняю ваши данные и чек, пожалуйста, подождите...")
     
+    # Пытаемся загрузить на диск и в таблицу
     success = await upload_to_drive_and_save_row(data, message.photo[-1].file_id)
     
     if success:
-        # Увеличиваем счетчик только после успешного сохранения
+        # Увеличиваем счетчик мест
         slot_id = f"{data['selected_date']}_{data['selected_time']}"
         BOOKED_SLOTS[slot_id] += 1
         
+        # Отчет админу
         if ADMIN_ID:
-            await bot.send_message(ADMIN_ID, f"🔥 **НОВАЯ ЗАЯВКА**\n{data['name']}\n{data['selected_date']} {data['selected_time']}")
+            report = (
+                f"🔥 **НОВАЯ ЗАЯВКА**\n"
+                f"👤 {data['name']} | {data['contact']}\n"
+                f"🗓 {data['selected_date']} в {data['selected_time']}"
+            )
+            await bot.send_message(ADMIN_ID, report)
             await message.copy_to(ADMIN_ID)
             
-        await wait_msg.edit_text("✨ **УСПЕШНО!**\nБронь подтверждена. Мы свяжемся с вами скоро.")
+        await wait_msg.edit_text(
+            "✨ **БЛАГОДАРИМ!**\n\nВаша бронь принята. Мы свяжемся с вами в ближайшее время. До встречи на мистерии!",
+            reply_markup=get_start_kb()
+        )
         await state.clear()
     else:
-        await wait_msg.edit_text("❌ Ошибка сохранения. Попробуйте еще раз или напишите админу.")
+        await wait_msg.edit_text("❌ Ошибка сохранения данных в облако. Попробуйте еще раз или свяжитесь с администратором.")
 
-# --- ВЕБ-СЕРВЕР И ЗАПУСК ---
-async def handle(request): return web.Response(text="Alive")
+# --- ВЕБ-СЕРВЕР ДЛЯ RENDER ---
+async def handle(request):
+    return web.Response(text="Bot is running")
 
 async def main():
+    # Настройка веб-сервера
     app = web.Application()
     app.router.add_get('/', handle)
     runner = web.AppRunner(app)
     await runner.setup()
-    await web.TCPSite(runner, '0.0.0.0', PORT).start()
+    site = web.TCPSite(runner, '0.0.0.0', PORT)
+    await site.start()
+
+    # Запуск бота
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logging.info("Bot stopped!")
