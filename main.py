@@ -154,8 +154,6 @@ async def process_date(message: types.Message, state: FSMContext):
         return
     
     await state.update_data(selected_date=message.text)
-    
-    # Динамически получаем список времени для выбранной даты
     available_times = TIMES_BY_DATE.get(message.text, [])
     
     await message.answer(
@@ -204,10 +202,12 @@ async def process_allergies(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data == "confirm_ok")
 async def process_confirm(callback: types.CallbackQuery, state: FSMContext):
+    # ПРАВКА: Добавлены кавычки и правильный перенос строки
     payment_text = (
         "✅ **ПОЧТИ ГОТОВО**\n"
         "Для завершения бронирования необходимо оплатить участие (**2999 р.**) и прислать скриншот чека.\n\n"
-        "📍 **Реквизиты:** `+79124591439` (Сбер/Т-Банк)\n Назначение платежа укажите "Благотворительный взнос""
+        "📍 **Реквизиты:** `+79124591439` (Сбер/Т-Банк)\n"
+        "Назначение платежа укажите: \"Благотворительный взнос\"\n"
         "👤 Екатерина Б."
     )
     await callback.message.edit_text(payment_text, parse_mode="Markdown")
@@ -217,7 +217,6 @@ async def process_confirm(callback: types.CallbackQuery, state: FSMContext):
 async def process_payment_proof(message: types.Message, state: FSMContext):
     data = await state.get_data()
     
-    # 1. Уведомление админу
     if ADMIN_ID:
         try:
             report = (
@@ -234,22 +233,26 @@ async def process_payment_proof(message: types.Message, state: FSMContext):
         except Exception as e:
             logging.error(f"Ошибка уведомления админа: {e}")
 
-    # 2. Обработка Google
     wait_msg = await message.answer("⌛ Сохраняю ваше место в сакральном списке...")
-    success = await upload_to_drive_and_save_row(data, message.photo[-1].file_id)
+    await upload_to_drive_and_save_row(data, message.photo[-1].file_id)
     
-    # 3. Финальный ответ
-    final_text = "✨ **БЛАГОДАРИМ!**\nВаша бронь подтверждена. Я подготовлю всё необходимое к нашей встрече. Не забудьте взять с собой удобную одежду, теплые носки и плед. 
-По желанию что-то к чаю.До встречи на Мистерии ✨"
+    # ПРАВКА: Исправлена синтаксическая ошибка в строке (недопустимый перенос без кавычек)
+    final_text = (
+        "✨ **БЛАГОДАРИМ!**\n"
+        "Ваша бронь подтверждена. Я подготовлю всё необходимое к нашей встрече. "
+        "Не забудьте взять с собой удобную одежду, теплые носки и плед. "
+        "По желанию — что-то к чаю. До встречи на Мистерии ✨"
+    )
     await wait_msg.edit_text(final_text)
     await state.clear()
 
-# --- WEB SERVER ---
 async def handle(request): return web.Response(text="OK")
 
 async def main():
-    app = web.Application(); app.router.add_get('/', handle)
-    runner = web.AppRunner(app); await runner.setup()
+    app = web.Application()
+    app.router.add_get('/', handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
     await web.TCPSite(runner, '0.0.0.0', PORT).start()
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
