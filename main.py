@@ -5,6 +5,7 @@ import sys
 import datetime
 import io
 import json
+import base64  # Добавлено для работы с кодировкой
 from collections import defaultdict
 
 # Библиотеки Google
@@ -35,17 +36,6 @@ MAX_PEOPLE_PER_SLOT = 15
 DRIVE_FOLDER_ID = "1aPzxYWdh085ZjQnr2KXs3O_HMCCWpfhn"
 SHEET_NAME = "Запись на Мистерию"
 
-BOOKED_SLOTS = defaultdict(int)
-
-class Registration(StatesGroup):
-    waiting_for_name = State()
-    waiting_for_contact = State()
-    waiting_for_date = State()
-    waiting_for_time = State()
-    waiting_for_allergies = State()
-    confirm_data = State()
-    waiting_for_payment_proof = State()
-
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
@@ -57,6 +47,15 @@ DATES_CONFIG = {
 }
 TIMES_CONFIG = ["🕙 10:00", "🕖 19:00"]
 
+class Registration(StatesGroup):
+    waiting_for_name = State()
+    waiting_for_contact = State()
+    waiting_for_date = State()
+    waiting_for_time = State()
+    waiting_for_allergies = State()
+    confirm_data = State()
+    waiting_for_payment_proof = State()
+
 # --- ФУНКЦИИ GOOGLE ---
 
 async def upload_to_drive_and_save_row(data, photo_file_id):
@@ -66,18 +65,23 @@ async def upload_to_drive_and_save_row(data, photo_file_id):
         content_bytes = file_content_io.read()
 
         def _sync_logic(content):
-            env_key = os.getenv("GOOGLE_JSON_KEY", "").strip()
-            if not env_key:
+            # 1. Получаем Base64 строку из переменной окружения
+            encoded_key = os.getenv("GOOGLE_JSON_KEY", "").strip()
+            if not encoded_key:
                 raise ValueError("GOOGLE_JSON_KEY is empty")
             
-            key_data = json.loads(env_key)
-            # Критическое исправление для Render: замена двойных слешей в ключе
+            # 2. Декодируем Base64 обратно в JSON-словарь
+            decoded_bytes = base64.b64decode(encoded_key)
+            key_data = json.loads(decoded_bytes.decode('utf-8'))
+            
+            # 3. Принудительно исправляем переносы строк (на всякий случай)
             if "private_key" in key_data:
                 key_data["private_key"] = key_data["private_key"].replace("\\n", "\n")
             
             scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
             creds = ServiceAccountCredentials.from_json_keyfile_dict(key_data, scope)
             
+            # Drive API
             drive_service = build('drive', 'v3', credentials=creds, cache_discovery=False)
             file_metadata = {
                 'name': f"Чек_{data['name']}_{datetime.datetime.now().strftime('%d_%m_%H%M')}.jpg",
@@ -86,6 +90,7 @@ async def upload_to_drive_and_save_row(data, photo_file_id):
             media = MediaIoBaseUpload(io.BytesIO(content), mimetype='image/jpeg', resumable=True)
             drive_file = drive_service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
             
+            # Sheets API
             client = gspread.authorize(creds)
             sheet = client.open(SHEET_NAME).sheet1
             row = [
@@ -152,7 +157,6 @@ async def process_time(message: types.Message, state: FSMContext):
         return
     if message.text not in TIMES_CONFIG: return
     await state.update_data(selected_time=message.text)
-    # Кнопки исчезают здесь
     await message.answer("Шаг 5: Есть ли **аллергия**? (Если нет — напишите «Нет»)", reply_markup=ReplyKeyboardRemove())
     await state.set_state(Registration.waiting_for_allergies)
 
@@ -176,7 +180,7 @@ async def process_confirm(callback: types.CallbackQuery, state: FSMContext):
 async def process_payment_proof(message: types.Message, state: FSMContext):
     data = await state.get_data()
     
-    # Сначала отчет Вам
+    # Сначала отчет Вам (Админу)
     if ADMIN_ID:
         try:
             report = (
@@ -195,11 +199,15 @@ async def process_payment_proof(message: types.Message, state: FSMContext):
             logging.error(f"Admin notify error: {e}")
 
     wait_msg = await message.answer("⌛ Секунду, сохраняю данные...")
+    
+    # Пробуем записать в Google
     success = await upload_to_drive_and_save_row(data, message.photo[-1].file_id)
     
-    await wait_msg.edit_text("✨ **БЛАГОДАРИМ!**\nВаша бронь подтверждена. До встречи!")
+    # Финальный ответ клиенту
+    await wait_msg.edit_text("✨ **БЛАГОДАРИМ!**\nВаша бронь подтверждена. До встречи на мистерии!")
     await state.clear()
 
+# --- SERVER ---
 async def handle(request): return web.Response(text="OK")
 
 async def main():
