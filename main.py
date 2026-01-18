@@ -73,9 +73,11 @@ async def upload_to_drive_and_save_row(data, photo_file_id):
             
             key_data = json.loads(env_key)
             scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-            creds = ServiceAccountCredentials.from_json_key_dict(key_data, scope)
             
-            # Drive
+            # ИСПРАВЛЕННЫЙ МЕТОД НИЖЕ
+            creds = ServiceAccountCredentials.from_json_keyfile_dict(key_data, scope)
+            
+            # Drive API
             drive_service = build('drive', 'v3', credentials=creds, cache_discovery=False)
             file_metadata = {
                 'name': f"Чек_{data['name']}_{datetime.datetime.now().strftime('%d_%m_%H%M')}.jpg",
@@ -84,7 +86,7 @@ async def upload_to_drive_and_save_row(data, photo_file_id):
             media = MediaIoBaseUpload(io.BytesIO(content), mimetype='image/jpeg', resumable=True)
             drive_file = drive_service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
             
-            # Sheets
+            # Sheets API
             client = gspread.authorize(creds)
             sheet = client.open(SHEET_NAME).sheet1
             row = [
@@ -117,7 +119,7 @@ def get_times_kb():
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer("✨ **МИСТЕРИЯ**\nДобро пожаловать. Начнем регистрацию?", reply_markup=get_start_kb(), parse_mode="Markdown")
+    await message.answer("✨ **МИСТЕРИЯ**\nНачнем регистрацию?", reply_markup=get_start_kb(), parse_mode="Markdown")
 
 @dp.message(F.text == "🚀 Начать регистрацию")
 async def start_form(message: types.Message, state: FSMContext):
@@ -173,7 +175,7 @@ async def process_confirm(callback: types.CallbackQuery, state: FSMContext):
 async def process_payment_proof(message: types.Message, state: FSMContext):
     data = await state.get_data()
     
-    # 1. Сначала уведомляем админа (Вас)
+    # Сначала Вам в личку
     if ADMIN_ID:
         try:
             report = f"🔥 **НОВАЯ ОПЛАТА**\n👤 {data.get('name')}\n📞 {data.get('contact')}\n🗓 {data.get('selected_date')} {data.get('selected_time')}"
@@ -182,11 +184,11 @@ async def process_payment_proof(message: types.Message, state: FSMContext):
         except Exception as e:
             logging.error(f"Admin notify error: {e}")
 
-    # 2. Потом пытаемся в Google
     wait_msg = await message.answer("⌛ Секунду, завершаю регистрацию...")
+    
+    # Пытаемся в Google
     success = await upload_to_drive_and_save_row(data, message.photo[-1].file_id)
     
-    # 3. Ответ пользователю в любом случае успех, т.к. админ уже получил чек
     await wait_msg.edit_text("✨ **БЛАГОДАРИМ!**\nВаша бронь подтверждена. До встречи!")
     await state.clear()
 
